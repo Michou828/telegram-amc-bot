@@ -55,9 +55,19 @@ CHAT_ID=your_telegram_chat_id
 ./start.sh
 ```
 
-### Deploy to Server
+This loads credentials from `.env` and starts the bot. It runs in the foreground — use `Ctrl+C` to stop.
 
-See [deploy.md](deploy.md) for full Google Cloud deployment and update instructions.
+### Deploy to Google Cloud (run 24/7)
+
+Google Cloud offers a free-tier e2-micro VM that can run this bot persistently at no cost.
+
+**High-level steps:**
+1. Create a free-tier Google Cloud account at [console.cloud.google.com](https://console.cloud.google.com)
+2. Spin up an e2-micro VM in `us-east1`, `us-central1`, or `us-west1`
+3. SSH in, clone the repo, install dependencies, create `.env`
+4. Set up a systemd service so the bot restarts automatically
+
+See [deploy.md](deploy.md) for step-by-step instructions and update workflow.
 
 ## Project Structure
 

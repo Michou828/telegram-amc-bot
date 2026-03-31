@@ -1418,7 +1418,9 @@ def main():
                         
                         elif state == "awaiting_custom_format":
                             custom_fmt = text.strip().upper()
-                            if custom_fmt:
+                            if not custom_fmt:
+                                bot.send_message(user_chat_id, "❌ Format name cannot be empty. Try again or /cancel.")
+                            elif custom_fmt:
                                 tracking_data[user_chat_id].setdefault('custom_formats', [])
                                 if custom_fmt not in tracking_data[user_chat_id]['custom_formats']:
                                     tracking_data[user_chat_id]['custom_formats'].append(custom_fmt)

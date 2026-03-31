@@ -206,6 +206,22 @@ class TelegramBot:
             print(f"Error answering callback: {e}")
             return None
 
+    def edit_message_reply_markup(self, chat_id: int, message_id: int, buttons: List[List[Dict]]):
+        """Edit the inline keyboard of an existing message"""
+        url = f"{self.base_url}/editMessageReplyMarkup"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reply_markup": {"inline_keyboard": buttons}
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Error editing reply markup: {e}")
+            return None
+
 class AMCHelper:
     """Helper functions for AMC website interaction"""
     

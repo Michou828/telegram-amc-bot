@@ -1167,6 +1167,22 @@ def main():
                             except (ValueError, IndexError):
                                 bot.send_message(user_chat_id, "❌ Invalid selection.")
 
+                        elif callback_data.startswith('fmt:'):
+                            fmt_name = callback_data.split(':', 1)[1]
+                            state = conversation_state.get(user_chat_id)
+                            if state == "awaiting_formats":
+                                selected = tracking_data[user_chat_id].get('selected_formats', set())
+                                if fmt_name in selected:
+                                    selected.discard(fmt_name)
+                                else:
+                                    selected.add(fmt_name)
+                                tracking_data[user_chat_id]['selected_formats'] = selected
+                                custom = tracking_data[user_chat_id].get('custom_formats', [])
+                                keyboard = handler._build_format_keyboard(selected, custom)
+                                msg_id = tracking_data[user_chat_id].get('format_msg_id')
+                                if msg_id:
+                                    bot.edit_message_reply_markup(user_chat_id, msg_id, keyboard)
+
                         continue
 
                     if 'message' not in update:

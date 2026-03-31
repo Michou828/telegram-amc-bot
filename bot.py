@@ -20,6 +20,8 @@ from typing import Dict, List, Optional, Tuple
 import re
 
 NY_TZ = ZoneInfo('America/New_York')
+KNOWN_FORMATS = ['IMAX 70MM', 'IMAX', 'DOLBY', '70MM', '3D', 'PRIME', 'DBOX', '4DX', 'SCREENX']
+
 from theater_matcher import TheaterMatcher
 
 CACHE_DIR = Path.home() / ".amc_monitors"
@@ -755,6 +757,39 @@ class BotCommandHandler:
         if now_playing_buttons:
             buttons.append([{"text": "── Now Playing ──", "callback_data": "noop"}])
             buttons += now_playing_buttons
+        return buttons
+
+    def _build_format_keyboard(self, selected: set, extra_custom: list = None) -> List[List[Dict]]:
+        """Build a toggle-style inline keyboard for format selection.
+
+        selected: set of format name strings currently toggled on
+        extra_custom: list of custom format strings added by user (appended after KNOWN_FORMATS)
+        Returns inline_keyboard rows.
+        """
+        all_formats = KNOWN_FORMATS + (extra_custom or [])
+        buttons = []
+
+        # Two formats per row
+        row = []
+        for fmt in all_formats:
+            check = "✅" if fmt in selected else "⬜"
+            row.append({"text": f"{check} {fmt}", "callback_data": f"fmt:{fmt}"})
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        # Custom input button
+        buttons.append([{"text": "⌨️ Custom format...", "callback_data": "fmt_custom"}])
+
+        # Done button — shows selection summary
+        if selected:
+            done_label = f"✅ Done — {', '.join(sorted(selected))}"
+        else:
+            done_label = "✅ Done — All formats"
+        buttons.append([{"text": done_label, "callback_data": "fmt_done"}])
+
         return buttons
 
     def handle_track(self, chat_id: int, recent_movies: RecentMovies):

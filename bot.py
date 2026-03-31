@@ -1342,18 +1342,22 @@ def main():
                             if not dates:
                                 bot.send_message(user_chat_id, "❌ Invalid date format. Try again or /cancel")
                                 continue
-                            
+
                             tracking_data[user_chat_id]['dates'] = dates
                             tracking_data[user_chat_id]['date_display'] = date_display
                             conversation_state[user_chat_id] = "awaiting_formats"
-                            bot.send_message(
+                            tracking_data[user_chat_id]['selected_formats'] = set()
+                            tracking_data[user_chat_id]['custom_formats'] = []
+                            keyboard = handler._build_format_keyboard(set())
+                            result = bot.send_message_with_buttons(
                                 user_chat_id,
                                 f"✅ Dates: <b>{date_display}</b>\n\n"
-                                f"Which <b>formats</b> to track?\n\n"
-                                f"Options: IMAX, DOLBY, 3D, PRIME, DBOX, 4DX, SCREENX\n\n"
-                                f"Example: <code>IMAX, DOLBY</code>\n"
-                                f"Or <code>any</code> for all formats"
+                                f"Which <b>formats</b> to track?\n"
+                                f"Tap to toggle. Done with nothing selected = all formats.",
+                                keyboard
                             )
+                            if result and result.get('ok'):
+                                tracking_data[user_chat_id]['format_msg_id'] = result['result']['message_id']
                         
                         elif state == "awaiting_formats":
                             if text.lower() == 'any':

@@ -1183,6 +1183,36 @@ def main():
                                 if msg_id:
                                     bot.edit_message_reply_markup(user_chat_id, msg_id, keyboard)
 
+                        elif callback_data == 'fmt_done':
+                            state = conversation_state.get(user_chat_id)
+                            if state == "awaiting_formats":
+                                selected = tracking_data[user_chat_id].get('selected_formats', set())
+                                formats = sorted(selected)  # empty list = all formats
+
+                                data = tracking_data[user_chat_id]
+                                manager.add_tracker(
+                                    data['url'], data['slug'], data['name'],
+                                    data['theater_name'], data['theater_slug'],
+                                    data['dates'], data['date_display'], formats
+                                )
+
+                                if not manager.monitoring:
+                                    manager.start_monitoring(user_chat_id)
+
+                                del conversation_state[user_chat_id]
+                                del tracking_data[user_chat_id]
+
+                                fmt_text = ', '.join(formats) if formats else 'Any'
+                                bot.send_message(
+                                    user_chat_id,
+                                    f"🎉 <b>Tracking Started!</b>\n\n"
+                                    f"🎬 {data['name']}\n"
+                                    f"🏛️ {data['theater_name']}\n"
+                                    f"📅 {data['date_display']}\n"
+                                    f"🎯 Formats: {fmt_text}\n\n"
+                                    f"I'll notify you when showtimes appear!"
+                                )
+
                         continue
 
                     if 'message' not in update:

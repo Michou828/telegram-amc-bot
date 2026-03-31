@@ -737,7 +737,7 @@ class BotCommandHandler:
             "2. Provide movie URL\n"
             "3. Enter theater name\n"
             "4. Enter date or range\n"
-            "5. Choose formats\n\n"
+            "5. Tap formats to toggle (or add custom)\n\n"
             "<b>Date Examples:</b>\n"
             "Single: <code>03/09</code> or <code>03/09/2026</code>\n"
             "Range: <code>03/09&gt;03/15</code> or <code>03/09/2026&gt;03/15/2026</code>\n\n"

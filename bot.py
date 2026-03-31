@@ -1213,6 +1213,17 @@ def main():
                                     f"I'll notify you when showtimes appear!"
                                 )
 
+                        elif callback_data == 'fmt_custom':
+                            state = conversation_state.get(user_chat_id)
+                            if state == "awaiting_formats":
+                                conversation_state[user_chat_id] = "awaiting_custom_format"
+                                bot.send_message(
+                                    user_chat_id,
+                                    "⌨️ Type a custom format name and send it.\n"
+                                    "Example: <code>LASER</code> or <code>OPEN CAPTION</code>\n\n"
+                                    "Or /cancel to go back."
+                                )
+
                         continue
 
                     if 'message' not in update:
@@ -1410,20 +1421,20 @@ def main():
                                 formats = []
                             else:
                                 formats = [f.strip() for f in text.split(',')]
-                            
+
                             data = tracking_data[user_chat_id]
                             manager.add_tracker(
                                 data['url'], data['slug'], data['name'],
                                 data['theater_name'], data['theater_slug'],
                                 data['dates'], data['date_display'], formats
                             )
-                            
+
                             if not manager.monitoring:
                                 manager.start_monitoring(user_chat_id)
-                            
+
                             del conversation_state[user_chat_id]
                             del tracking_data[user_chat_id]
-                            
+
                             fmt_text = ', '.join(formats) if formats else 'Any'
                             bot.send_message(
                                 user_chat_id,
@@ -1434,7 +1445,29 @@ def main():
                                 f"🎯 Formats: {fmt_text}\n\n"
                                 f"I'll notify you when showtimes appear!"
                             )
-                        
+
+                        elif state == "awaiting_custom_format":
+                            custom_fmt = text.strip().upper()
+                            if custom_fmt:
+                                tracking_data[user_chat_id].setdefault('custom_formats', [])
+                                if custom_fmt not in tracking_data[user_chat_id]['custom_formats']:
+                                    tracking_data[user_chat_id]['custom_formats'].append(custom_fmt)
+                                # Auto-select the custom format
+                                tracking_data[user_chat_id].setdefault('selected_formats', set())
+                                tracking_data[user_chat_id]['selected_formats'].add(custom_fmt)
+
+                                conversation_state[user_chat_id] = "awaiting_formats"
+                                selected = tracking_data[user_chat_id]['selected_formats']
+                                custom = tracking_data[user_chat_id]['custom_formats']
+                                keyboard = handler._build_format_keyboard(selected, custom)
+                                result = bot.send_message_with_buttons(
+                                    user_chat_id,
+                                    f"✅ Added <b>{custom_fmt}</b>. Continue selecting or tap Done.",
+                                    keyboard
+                                )
+                                if result and result.get('ok'):
+                                    tracking_data[user_chat_id]['format_msg_id'] = result['result']['message_id']
+
                         # CHECK flow
                         elif state == "check_awaiting_url":
                             movie_slug = AMCHelper.extract_movie_slug(text)

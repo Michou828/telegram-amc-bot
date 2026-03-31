@@ -1416,36 +1416,6 @@ def main():
                             if result and result.get('ok'):
                                 tracking_data[user_chat_id]['format_msg_id'] = result['result']['message_id']
                         
-                        elif state == "awaiting_formats":
-                            if text.lower() == 'any':
-                                formats = []
-                            else:
-                                formats = [f.strip() for f in text.split(',')]
-
-                            data = tracking_data[user_chat_id]
-                            manager.add_tracker(
-                                data['url'], data['slug'], data['name'],
-                                data['theater_name'], data['theater_slug'],
-                                data['dates'], data['date_display'], formats
-                            )
-
-                            if not manager.monitoring:
-                                manager.start_monitoring(user_chat_id)
-
-                            del conversation_state[user_chat_id]
-                            del tracking_data[user_chat_id]
-
-                            fmt_text = ', '.join(formats) if formats else 'Any'
-                            bot.send_message(
-                                user_chat_id,
-                                f"🎉 <b>Tracking Started!</b>\n\n"
-                                f"🎬 {data['name']}\n"
-                                f"🏛️ {data['theater_name']}\n"
-                                f"📅 {data['date_display']}\n"
-                                f"🎯 Formats: {fmt_text}\n\n"
-                                f"I'll notify you when showtimes appear!"
-                            )
-
                         elif state == "awaiting_custom_format":
                             custom_fmt = text.strip().upper()
                             if custom_fmt:

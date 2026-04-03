@@ -28,7 +28,7 @@ CACHE_DIR = Path.home() / ".amc_monitors"
 CACHE_DIR.mkdir(exist_ok=True)
 
 # Shared curl_cffi session — impersonates Chrome TLS fingerprint to bypass Cloudflare on cloud IPs
-_amc_scraper = cffi_requests.Session(impersonate="chrome120")
+_amc_scraper = cffi_requests.Session(impersonate="chrome110")
 
 class RecentMovies:
     """Track recently checked/tracked movies for quick access"""

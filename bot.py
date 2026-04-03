@@ -6,7 +6,7 @@ With fuzzy theater search
 """
 
 import requests
-import cloudscraper
+from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
 import hashlib
 import time
@@ -27,8 +27,8 @@ from theater_matcher import TheaterMatcher
 CACHE_DIR = Path.home() / ".amc_monitors"
 CACHE_DIR.mkdir(exist_ok=True)
 
-# Shared cloudscraper session for all AMC requests (bypasses Cloudflare)
-_amc_scraper = cloudscraper.create_scraper()
+# Shared curl_cffi session — impersonates Chrome TLS fingerprint to bypass Cloudflare on cloud IPs
+_amc_scraper = cffi_requests.Session(impersonate="chrome120")
 
 class RecentMovies:
     """Track recently checked/tracked movies for quick access"""
@@ -349,7 +349,10 @@ class ShowtimeFetcher:
         try:
             response = _amc_scraper.get(url, timeout=20)
             
-            if response.status_code != 200:
+            if response.status_code == 403:
+                print(f"403 Forbidden — Cloudflare block for {date} ({url})")
+                return {'available': False, 'formats': {}}
+            elif response.status_code != 200:
                 print(f"Status {response.status_code} for {date}")
                 return {'available': False, 'formats': {}}
             

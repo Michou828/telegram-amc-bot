@@ -6,7 +6,7 @@ With fuzzy theater search
 """
 
 import requests
-from curl_cffi import requests as cffi_requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import hashlib
 import time
@@ -27,8 +27,8 @@ from theater_matcher import TheaterMatcher
 CACHE_DIR = Path.home() / ".amc_monitors"
 CACHE_DIR.mkdir(exist_ok=True)
 
-# Shared curl_cffi session — impersonates Chrome TLS fingerprint to bypass Cloudflare on cloud IPs
-_amc_scraper = cffi_requests.Session(impersonate="chrome110")
+# Shared cloudscraper session for all AMC requests (bypasses Cloudflare)
+_amc_scraper = cloudscraper.create_scraper()
 
 class RecentMovies:
     """Track recently checked/tracked movies for quick access"""

@@ -6,7 +6,10 @@ With fuzzy theater search
 """
 
 import requests
-import cloudscraper
+try:
+    import cloudscraper
+except ImportError:
+    cloudscraper = None
 from bs4 import BeautifulSoup
 import hashlib
 import time
@@ -27,8 +30,80 @@ from theater_matcher import TheaterMatcher
 CACHE_DIR = Path.home() / ".amc_monitors"
 CACHE_DIR.mkdir(exist_ok=True)
 
-# Shared cloudscraper session for all AMC requests (bypasses Cloudflare)
-_amc_scraper = cloudscraper.create_scraper()
+# Shared HTTP session for AMC HTML pages (bypasses Cloudflare where possible)
+try:
+    from curl_cffi import requests as cffi_requests
+    _amc_scraper = cffi_requests.Session(impersonate="chrome110")
+    print("Using curl_cffi (chrome110 impersonation)")
+except ImportError:
+    if cloudscraper:
+        _amc_scraper = cloudscraper.create_scraper()
+        print("Using cloudscraper")
+    else:
+        _amc_scraper = requests.Session()
+        print("WARNING: Neither curl_cffi nor cloudscraper available — plain requests")
+
+# GraphQL API session (separate — always uses curl_cffi for TLS fingerprinting)
+try:
+    from curl_cffi import requests as _cffi
+    _gql_session = _cffi.Session(impersonate="chrome110")
+except ImportError:
+    _gql_session = requests.Session()
+
+GRAPHQL_URL = "https://graph.amctheatres.com"
+GRAPHQL_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "Origin": "https://www.amctheatres.com",
+    "Referer": "https://www.amctheatres.com/",
+}
+
+# slug → numeric theatre_id lookup (populated from theaters.json)
+_THEATRE_ID_CACHE: dict = {}
+
+def _load_theatre_ids():
+    """Load theatre slug→id mapping from theaters.json."""
+    try:
+        with open(Path(__file__).parent / "theaters.json") as f:
+            data = json.load(f)
+        for t in data.get("theaters", []):
+            if t.get("theatre_id"):
+                _THEATRE_ID_CACHE[t["slug"]] = t["theatre_id"]
+    except Exception as e:
+        print(f"Warning: could not load theatre IDs: {e}")
+
+def _graphql(query: str) -> dict:
+    """Execute a GraphQL query against the AMC API."""
+    r = _gql_session.post(GRAPHQL_URL, headers=GRAPHQL_HEADERS,
+                          json={"query": query}, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+# Format name mapping: AMC API → our standardized KNOWN_FORMATS names
+_API_FORMAT_MAP = {
+    "imax with laser at amc": "IMAX",
+    "imax at amc": "IMAX",
+    "imax 70mm": "IMAX 70MM",
+    "dolby cinema at amc": "DOLBY",
+    "laser at amc": "PRIME",
+    "reald 3d": "3D",
+    "3d at amc": "3D",
+    "d-box at amc": "DBOX",
+    "d-box": "DBOX",
+    "dbox": "DBOX",
+    "4dx at amc": "4DX",
+    "4dx": "4DX",
+    "screenx": "SCREENX",
+    "70mm": "70MM",
+}
+
+def _normalize_api_format(name: str) -> str:
+    """Map an AMC API format attribute name to our standardized format name."""
+    key = name.strip().lower()
+    if key in _API_FORMAT_MAP:
+        return _API_FORMAT_MAP[key]
+    # Fallback: uppercase as-is
+    return name.strip().upper()
 
 class RecentMovies:
     """Track recently checked/tracked movies for quick access"""
@@ -102,32 +177,28 @@ class NowPlayingFetcher:
         self._cache_time = 0
 
     def fetch(self, limit: int = 10) -> List[Dict]:
-        """Returns list of {name, slug, url} for Now Playing movies"""
+        """Returns list of {name, slug, url} for Now Playing movies via GraphQL API."""
         now = time.time()
         if self._cache is not None and (now - self._cache_time) < self.CACHE_TTL:
             return self._cache[:limit]
 
         try:
-            r = _amc_scraper.get(self.MOVIES_URL, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, 'html.parser')
-            seen = set()
-            movies = []
-            for a in soup.find_all('a', href=re.compile(r'^/movies/[a-z0-9-]+-\d+$')):
-                href = a['href']
-                if href in seen:
-                    continue
-                seen.add(href)
-                slug = href.split('/movies/')[1]
-                name = AMCHelper.slug_to_title(slug)
-                movies.append({
-                    "name": name,
-                    "slug": slug,
-                    "url": f"https://www.amctheatres.com{href}"
-                })
+            data = _graphql(
+                "{ viewer { movies(availability: NOW_PLAYING, first: 100) "
+                "{ edges { node { name slug } } } } }"
+            )
+            edges = data["data"]["viewer"]["movies"]["edges"]
+            movies = [
+                {
+                    "name": e["node"]["name"],
+                    "slug": e["node"]["slug"],
+                    "url": f"https://www.amctheatres.com/movies/{e['node']['slug']}",
+                }
+                for e in edges
+            ]
             self._cache = movies
             self._cache_time = now
-            print(f"Fetched {len(movies)} now playing movies from AMC")
+            print(f"Fetched {len(movies)} now playing movies from AMC GraphQL")
             return movies[:limit]
         except Exception as e:
             print(f"Error fetching now playing movies: {e}")
@@ -287,7 +358,8 @@ class AMCHelper:
         except ValueError:
             pass
         try:
-            return datetime.strptime(date_str, '%m/%d').replace(year=datetime.now().year)
+            month, day = date_str.split('/')
+            return datetime(datetime.now().year, int(month), int(day))
         except ValueError:
             pass
         return None
@@ -337,153 +409,103 @@ class AMCHelper:
         return result
 
 class ShowtimeFetcher:
-    """Fetches and parses showtimes from AMC"""
+    """Fetches showtimes from AMC GraphQL API."""
 
     def __init__(self):
         pass
 
+    def _get_theatre_id(self, theater_slug: str) -> Optional[int]:
+        """Return numeric theatreId for a slug, fetching from API if not cached."""
+        if theater_slug in _THEATRE_ID_CACHE:
+            return _THEATRE_ID_CACHE[theater_slug]
+        try:
+            data = _graphql(
+                f'{{ viewer {{ theatre(slug: "{theater_slug}") {{ theatreId }} }} }}'
+            )
+            tid = data["data"]["viewer"]["theatre"]["theatreId"]
+            if tid:
+                _THEATRE_ID_CACHE[theater_slug] = tid
+            return tid
+        except Exception as e:
+            print(f"Could not fetch theatreId for {theater_slug}: {e}")
+            return None
+
     def get_showtimes_for_date(self, movie_slug: str, theater_slug: str, date: str) -> Dict:
-        """Get showtimes for a specific date and theater"""
-        url = f"https://www.amctheatres.com/movies/{movie_slug}/showtimes?date={date}&theatre={theater_slug}"
+        """Get showtimes for a specific date and theater via GraphQL API.
+
+        date: YYYY-MM-DD format
+        Returns {'available': bool, 'formats': {format_name: [HH:MM, ...]}}
+        """
+        theatre_id = self._get_theatre_id(theater_slug)
+        if not theatre_id:
+            print(f"No theatreId for {theater_slug} — cannot fetch showtimes")
+            return {'available': False, 'formats': {}}
+
+        query = f"""{{
+          viewer {{
+            movie(slug: "{movie_slug}") {{
+              formats(theatreId: {theatre_id}) {{
+                items {{
+                  groups {{
+                    edges {{
+                      node {{
+                        showtimeGroupHeadingAttribute {{ name }}
+                        showtimes(first: 100) {{
+                          edges {{ node {{ when businessDate }} }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}"""
 
         try:
-            response = _amc_scraper.get(url, timeout=20)
-            
-            if response.status_code == 403:
-                print(f"403 Forbidden — Cloudflare block for {date} ({url})")
+            data = _graphql(query)
+            movie_data = data.get("data", {}).get("viewer", {}).get("movie")
+            if not movie_data or not movie_data.get("formats"):
+                print(f"No movie/formats data for {movie_slug}")
                 return {'available': False, 'formats': {}}
-            elif response.status_code != 200:
-                print(f"Status {response.status_code} for {date}")
-                return {'available': False, 'formats': {}}
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Parse the formats and times
-            formats_dict = self._parse_formats_and_times(response.text, soup)
-            
-            return {
-                'available': len(formats_dict) > 0,
-                'formats': formats_dict
-            }
-        
+
+            formats_dict: Dict[str, List[str]] = {}
+
+            for item in (movie_data["formats"]["items"] or []):
+                for edge in item["groups"]["edges"]:
+                    node = edge["node"]
+                    raw_name = node["showtimeGroupHeadingAttribute"]["name"]
+                    format_name = _normalize_api_format(raw_name)
+
+                    times = []
+                    for st_edge in node["showtimes"]["edges"]:
+                        st = st_edge["node"]
+                        if st["businessDate"] != date:
+                            continue
+                        # Convert UTC ISO to Eastern time HH:MM
+                        utc_dt = datetime.fromisoformat(
+                            st["when"].replace("Z", "+00:00")
+                        )
+                        et_dt = utc_dt.astimezone(NY_TZ)
+                        times.append(et_dt.strftime("%H:%M"))
+
+                    if times:
+                        if format_name in formats_dict:
+                            formats_dict[format_name] = sorted(
+                                set(formats_dict[format_name] + times)
+                            )
+                        else:
+                            formats_dict[format_name] = sorted(times)
+
+            print(f"Found {len(formats_dict)} formats for {movie_slug} on {date}")
+            for fmt, times in formats_dict.items():
+                print(f"  {fmt}: {times}")
+
+            return {'available': len(formats_dict) > 0, 'formats': formats_dict}
+
         except Exception as e:
-            print(f"Error fetching showtimes: {e}")
+            print(f"Error fetching showtimes via GraphQL: {e}")
             return {'available': False, 'formats': {}}
-    
-    def _parse_formats_and_times(self, page_text: str, soup: BeautifulSoup) -> Dict[str, List[str]]:
-        """Parse formats and showtimes from AMC's HTML structure
-        
-        AMC structure:
-        <li role="listitem" aria-label="FORMAT Showtimes">
-          <h3>FORMAT NAME</h3>
-          <ul aria-label="Showtime Group Results">
-            <a>11:00am</a>
-            <a>3:00pm</a>
-          </ul>
-        """
-        formats = {}
-        
-        # Find the "Nearby Theatres" divider to know where to stop
-        nearby_divider = soup.find('span', string=re.compile(r'Nearby\s+Theatres', re.IGNORECASE))
-        
-        # Find all showtime sections
-        all_showtime_sections = soup.find_all('li', {'role': 'listitem', 'aria-label': re.compile(r'Showtimes')})
-        
-        # Filter to only sections BEFORE "Nearby Theatres"
-        showtime_sections = []
-        for section in all_showtime_sections:
-            # If we found the nearby divider, check if this section comes after it
-            if nearby_divider:
-                # Check if this section appears before the divider in the document
-                # Compare positions in the HTML
-                try:
-                    section_pos = str(soup).index(str(section))
-                    divider_pos = str(soup).index(str(nearby_divider))
-                    
-                    if section_pos < divider_pos:
-                        showtime_sections.append(section)
-                    else:
-                        break  # Stop once we hit sections after the divider
-                except:
-                    # If comparison fails, include it
-                    showtime_sections.append(section)
-            else:
-                # No divider found, include all
-                showtime_sections.append(section)
-        
-        print(f"Found {len(showtime_sections)} showtime sections for target theater")
-        
-        for section in showtime_sections:
-            # Get the format name from h3
-            h3 = section.find('h3')
-            if not h3:
-                continue
-            
-            # Extract format name from h3 text
-            format_text = h3.get_text(strip=True)
-            
-            # Clean up format name
-            # "IMAX 70MM: EXTRAORDINARY AWAITS" -> "IMAX 70MM"
-            format_name = format_text.split(':')[0].strip() if ':' in format_text else format_text
-            
-            # Standardize format names
-            if 'IMAX 70MM' in format_name.upper():
-                format_name = 'IMAX 70MM'
-            elif 'DOLBY' in format_name.upper():
-                format_name = 'DOLBY'
-            elif '70MM' in format_name.upper() and 'IMAX' not in format_name.upper():
-                format_name = '70MM'
-            elif 'IMAX' in format_name.upper():
-                format_name = 'IMAX'
-            elif '3D' in format_name.upper() or 'REALD' in format_name.upper():
-                format_name = '3D'
-            elif 'PRIME' in format_name.upper():
-                format_name = 'PRIME'
-            elif 'DBOX' in format_name.upper() or 'D-BOX' in format_name.upper():
-                format_name = 'DBOX'
-            elif '4DX' in format_name.upper():
-                format_name = '4DX'
-            elif 'SCREENX' in format_name.upper():
-                format_name = 'SCREENX'
-            else:
-                format_name = format_name.upper()
-            
-            # Find the showtime buttons
-            showtime_ul = section.find('ul', {'aria-label': 'Showtime Group Results'})
-            if not showtime_ul:
-                continue
-            
-            # Find all time links
-            time_links = showtime_ul.find_all('a', href=re.compile(r'/showtimes/'))
-            
-            times = []
-            time_pattern = r'(\d{1,2}):(\d{2})\s*(am|pm)'
-            
-            for link in time_links:
-                time_text = link.get_text(strip=True)
-                
-                # Extract time (e.g., "11:00am UP TO 15% OFF" -> "11:00am")
-                match = re.search(time_pattern, time_text, re.IGNORECASE)
-                if match:
-                    hour, minute, meridiem = match.groups()
-                    hour = int(hour)
-                    minute = int(minute)
-                    
-                    # Convert to 24-hour
-                    if meridiem.lower() == 'pm' and hour != 12:
-                        hour += 12
-                    elif meridiem.lower() == 'am' and hour == 12:
-                        hour = 0
-                    
-                    # FIX: Properly format with zero padding for both hour and minute
-                    time_24h = f"{hour:02d}:{minute:02d}"
-                    times.append(time_24h)
-            
-            if times:
-                formats[format_name] = sorted(times)
-                print(f"  {format_name}: {times}")
-        
-        return formats
 
 class MovieTracker:
     """Tracks a movie at a specific theater for specific dates"""
@@ -967,6 +989,10 @@ class BotCommandHandler:
 
             self.bot.send_message(chat_id, message)
             time.sleep(0.5)
+
+# Load theatre IDs from theaters.json into the module-level cache
+_load_theatre_ids()
+
 
 def main():
     if len(sys.argv) < 3:

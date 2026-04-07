@@ -2,6 +2,7 @@
   "theaters": [
     {
       "slug": "amc-lincoln-square-13",
+      "theatre_id": 2116,
       "name": "AMC Lincoln Square 13",
       "city": "New York",
       "state": "NY",
@@ -20,6 +21,7 @@
     },
     {
       "slug": "amc-empire-25",
+      "theatre_id": 552,
       "name": "AMC Empire 25",
       "city": "New York",
       "state": "NY",
@@ -37,6 +39,7 @@
     },
     {
       "slug": "amc-34th-street-14",
+      "theatre_id": 2120,
       "name": "AMC 34th Street 14",
       "city": "New York",
       "state": "NY",
@@ -53,6 +56,7 @@
     },
     {
       "slug": "amc-kips-bay-15",
+      "theatre_id": 2195,
       "name": "AMC Kips Bay 15",
       "city": "New York",
       "state": "NY",
@@ -68,6 +72,7 @@
     },
     {
       "slug": "amc-19th-street-east-6",
+      "theatre_id": null,
       "name": "AMC 19th Street East 6",
       "city": "New York",
       "state": "NY",
@@ -83,6 +88,7 @@
     },
     {
       "slug": "amc-84th-street-6",
+      "theatre_id": 2102,
       "name": "AMC 84th Street 6",
       "city": "New York",
       "state": "NY",
@@ -98,6 +104,7 @@
     },
     {
       "slug": "amc-orpheum-7",
+      "theatre_id": 2104,
       "name": "AMC Orpheum 7",
       "city": "New York",
       "state": "NY",
@@ -113,6 +120,7 @@
     },
     {
       "slug": "amc-village-7",
+      "theatre_id": 2110,
       "name": "AMC Village 7",
       "city": "New York",
       "state": "NY",
@@ -128,6 +136,7 @@
     },
     {
       "slug": "amc-magic-johnson-harlem-9",
+      "theatre_id": 2304,
       "name": "AMC Magic Johnson Harlem 9",
       "city": "New York",
       "state": "NY",
@@ -143,6 +152,7 @@
     },
     {
       "slug": "amc-loews-theater-boston-common-19",
+      "theatre_id": null,
       "name": "AMC Boston Common 19",
       "city": "Boston",
       "state": "MA",
@@ -158,6 +168,7 @@
     },
     {
       "slug": "amc-bay-plaza-cinema-13",
+      "theatre_id": 866,
       "name": "AMC Bay Plaza Cinema 13",
       "city": "Bronx",
       "state": "NY",
@@ -172,6 +183,7 @@
     },
     {
       "slug": "amc-jersey-gardens-20",
+      "theatre_id": 2198,
       "name": "AMC Jersey Gardens 20",
       "city": "Elizabeth",
       "state": "NJ",
@@ -188,6 +200,7 @@
     },
     {
       "slug": "amc-newport-centre-11",
+      "theatre_id": 2184,
       "name": "AMC Newport Centre 11",
       "city": "Jersey City",
       "state": "NJ",
@@ -204,10 +217,10 @@
     }
   ],
   "metadata": {
-    "version": "1.0",
-    "last_updated": "2026-03-22",
+    "version": "1.1",
+    "last_updated": "2026-04-07",
     "region": "New York City Metro Area",
     "total_theaters": 13,
-    "notes": "Includes Manhattan, Bronx, and nearby NJ theaters accessible from NYC"
+    "notes": "Includes Manhattan, Bronx, and nearby NJ theaters accessible from NYC. theatre_id is the numeric AMC API ID."
   }
 }

@@ -19,10 +19,14 @@ Credentials are stored in `.env` as `BOT_TOKEN` and `CHAT_ID`.
 No `requirements.txt` exists. Install manually:
 
 ```bash
-pip install requests beautifulsoup4 cloudscraper
+# Mac / residential (curl_cffi preferred, cloudscraper as fallback)
+pip install requests beautifulsoup4 curl_cffi
+
+# Pi / Linux / cloud (curl_cffi required — cloudscraper doesn't pass Cloudflare there)
+pip install requests beautifulsoup4 curl_cffi
 ```
 
-`cloudscraper` is required — AMC's website and GraphQL API are behind Cloudflare and return 403 to plain `requests`.
+`curl_cffi` is the primary Cloudflare bypass (browser TLS impersonation). If not installed, falls back to `cloudscraper`, then plain `requests`. `beautifulsoup4` is kept for any remaining HTML parsing.
 
 ## Architecture
 
@@ -45,14 +49,22 @@ This is a **Telegram bot** that monitors AMC movie showtimes and sends notificat
 | `RecentMovies` | Persists last 5 tracked movies to `~/.amc_monitors/recent_movies.json` |
 | `TelegramBot` | Telegram API wrapper (long-polling, send messages, inline keyboards) |
 | `AMCHelper` | URL parsing, slug/title conversion, date parsing, theater validation |
-| `ShowtimeFetcher` | Scrapes AMC showtime HTML; parses formats and showtimes |
+| `ShowtimeFetcher` | Fetches showtimes via AMC GraphQL API; parses formats and times |
 | `MovieTracker` | Tracks one movie at one theater; caches results per date to detect changes |
 | `MonitorManager` | Background thread; checks all trackers every N seconds (default 300s) |
 | `BotCommandHandler` | Routes commands and manages per-user conversation state machine |
 
 ### Cloudflare / HTTP
 
-All AMC requests use a **shared module-level `_amc_scraper`** (`cloudscraper.create_scraper()`) defined at the top of `bot.py`. Used by `ShowtimeFetcher`, `NowPlayingFetcher`, and `AMCHelper.validate_theater`. Never use plain `requests` for AMC URLs.
+All AMC data now comes from the **GraphQL API at `https://graph.amctheatres.com`**, not HTML scraping. AMC's website pages are protected by queue-it (a JS challenge that can't be solved without real browser execution).
+
+Two module-level sessions in `bot.py`:
+- `_amc_scraper` — for any remaining HTML requests (curl_cffi chrome110 → cloudscraper → requests)
+- `_gql_session` — dedicated GraphQL session (always curl_cffi chrome110 if available)
+
+`_graphql(query)` is the helper used by `NowPlayingFetcher` and `ShowtimeFetcher`. GraphQL headers include `Origin` and `Referer` pointing to `amctheatres.com` — required for the API to accept requests.
+
+`theaters.json` now includes a `theatre_id` numeric field for each theater (the AMC internal ID required for GraphQL showtime queries). The `_THEATRE_ID_CACHE` dict maps slug→id and is populated at startup from `theaters.json`.
 
 ### Conversation State Machine
 

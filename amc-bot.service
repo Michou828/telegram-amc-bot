@@ -3,14 +3,10 @@ Description=AMC Showtime Telegram Bot
 After=network.target
 
 [Service]
-# Set the correct working directory for your bot
-WorkingDirectory=/home/pi/amc-bot
-# Path to the python executable inside your venv
-ExecStart=/home/pi/amc-bot/venv/bin/python amc_showtime_bot.py
-# Restart the bot automatically if it crashes
+WorkingDirectory=/home/michou/telegram-amc-bot
+ExecStart=/home/michou/telegram-amc-bot/.venv/bin/python amc_showtime_bot.py
 Restart=always
 RestartSec=10
-# Ensure logs are visible via journalctl
 StandardOutput=inherit
 StandardError=inherit
 

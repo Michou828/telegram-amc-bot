@@ -4,7 +4,7 @@
     - Every tool, library, and logic block MUST prioritize low memory usage.
     - Full browsers (SeleniumBase/Chrome) are restricted to **on-demand cookie harvesting ONLY**. They must never be the primary scraping engine.
     - Normal polling and bot operations must stay within a ~50MB RAM footprint using lightweight tools like `curl_cffi` and `sqlite3`.
-- **Python Environment**: Always use the virtual environment located at `./venv`.
+- **Python Environment**: Always use the virtual environment located at `./venv` or `./.venv`.
 - **Security & Credentials**: 
     - Load all sensitive data via `python-dotenv` from a local `.env` file.
     - NEVER print credentials in logs or tool outputs.

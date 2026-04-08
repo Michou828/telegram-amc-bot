@@ -1,0 +1,226 @@
+{
+  "theaters": [
+    {
+      "slug": "amc-lincoln-square-13",
+      "market": "new-york-city",
+      "name": "AMC Lincoln Square 13",
+      "city": "New York",
+      "state": "NY",
+      "address": "1998 Broadway",
+      "zip": "10023",
+      "neighborhood": "Upper West Side",
+      "search_terms": [
+        "lincoln square",
+        "lincoln sq",
+        "ls13",
+        "broadway",
+        "upper west side",
+        "imax 70mm",
+        "dolby"
+      ]
+    },
+    {
+      "slug": "amc-empire-25",
+      "market": "new-york-city",
+      "name": "AMC Empire 25",
+      "city": "New York",
+      "state": "NY",
+      "address": "234 W 42nd St",
+      "zip": "10036",
+      "neighborhood": "Times Square",
+      "search_terms": [
+        "empire",
+        "empire 25",
+        "42nd street",
+        "times square",
+        "broadway",
+        "imax"
+      ]
+    },
+    {
+      "slug": "amc-34th-street-14",
+      "market": "new-york-city",
+      "name": "AMC 34th Street 14",
+      "city": "New York",
+      "state": "NY",
+      "address": "312 W 34th St",
+      "zip": "10001",
+      "neighborhood": "Midtown West",
+      "search_terms": [
+        "34th street",
+        "34th st",
+        "penn station",
+        "midtown",
+        "herald square"
+      ]
+    },
+    {
+      "slug": "amc-kips-bay-15",
+      "market": "new-york-city",
+      "name": "AMC Kips Bay 15",
+      "city": "New York",
+      "state": "NY",
+      "address": "570 2nd Ave",
+      "zip": "10016",
+      "neighborhood": "Kips Bay",
+      "search_terms": [
+        "kips bay",
+        "kipsbay",
+        "2nd avenue",
+        "murray hill"
+      ]
+    },
+    {
+      "slug": "amc-19th-street-east-6",
+      "market": "new-york-city",
+      "name": "AMC 19th Street East 6",
+      "city": "New York",
+      "state": "NY",
+      "address": "890 Broadway",
+      "zip": "10003",
+      "neighborhood": "Union Square",
+      "search_terms": [
+        "19th street",
+        "union square",
+        "broadway",
+        "flatiron"
+      ]
+    },
+    {
+      "slug": "amc-84th-street-6",
+      "market": "new-york-city",
+      "name": "AMC 84th Street 6",
+      "city": "New York",
+      "state": "NY",
+      "address": "2310 Broadway",
+      "zip": "10024",
+      "neighborhood": "Upper West Side",
+      "search_terms": [
+        "84th street",
+        "84th st",
+        "upper west side",
+        "broadway"
+      ]
+    },
+    {
+      "slug": "amc-orpheum-7",
+      "market": "new-york-city",
+      "name": "AMC Orpheum 7",
+      "city": "New York",
+      "state": "NY",
+      "address": "3rd Avenue & 86th St",
+      "zip": "10028",
+      "neighborhood": "Upper East Side",
+      "search_terms": [
+        "orpheum",
+        "86th street",
+        "upper east side",
+        "3rd avenue"
+      ]
+    },
+    {
+      "slug": "amc-village-7",
+      "market": "new-york-city",
+      "name": "AMC Village 7",
+      "city": "New York",
+      "state": "NY",
+      "address": "66 3rd Ave",
+      "zip": "10003",
+      "neighborhood": "East Village",
+      "search_terms": [
+        "village",
+        "east village",
+        "3rd avenue",
+        "astor place"
+      ]
+    },
+    {
+      "slug": "amc-magic-johnson-harlem-9",
+      "market": "new-york-city",
+      "name": "AMC Magic Johnson Harlem 9",
+      "city": "New York",
+      "state": "NY",
+      "address": "2309 Frederick Douglass Blvd",
+      "zip": "10027",
+      "neighborhood": "Harlem",
+      "search_terms": [
+        "harlem",
+        "magic johnson",
+        "frederick douglass",
+        "125th street"
+      ]
+    },
+    {
+      "slug": "amc-loews-theater-boston-common-19",
+      "market": "boston",
+      "name": "AMC Boston Common 19",
+      "city": "Boston",
+      "state": "MA",
+      "address": "175 Tremont St",
+      "zip": "02111",
+      "neighborhood": "Downtown Boston",
+      "search_terms": [
+        "boston common",
+        "boston",
+        "tremont"
+      ],
+      "note": "Nearby option - included for travelers"
+    },
+    {
+      "slug": "amc-bay-plaza-cinema-13",
+      "market": "new-york-city",
+      "name": "AMC Bay Plaza Cinema 13",
+      "city": "Bronx",
+      "state": "NY",
+      "address": "2210 Bartow Ave",
+      "zip": "10475",
+      "neighborhood": "Co-op City",
+      "search_terms": [
+        "bay plaza",
+        "bronx",
+        "co-op city"
+      ]
+    },
+    {
+      "slug": "amc-jersey-gardens-20",
+      "market": "elizabeth",
+      "name": "AMC Jersey Gardens 20",
+      "city": "Elizabeth",
+      "state": "NJ",
+      "address": "651 Kapkowski Rd",
+      "zip": "07201",
+      "neighborhood": "Elizabeth",
+      "search_terms": [
+        "jersey gardens",
+        "elizabeth",
+        "new jersey",
+        "nj"
+      ],
+      "note": "Nearby NYC metro area"
+    },
+    {
+      "slug": "amc-newport-centre-11",
+      "market": "jersey-city",
+      "name": "AMC Newport Centre 11",
+      "city": "Jersey City",
+      "state": "NJ",
+      "address": "30 Mall Dr W",
+      "zip": "07310",
+      "neighborhood": "Newport",
+      "search_terms": [
+        "newport",
+        "jersey city",
+        "newport centre",
+        "nj"
+      ],
+      "note": "Nearby NYC metro area"
+    }
+  ],
+  "metadata": {
+    "version": "1.1",
+    "last_updated": "2026-04-08",
+    "region": "New York City Metro Area",
+    "total_theaters": 13,
+    "notes": "Includes Manhattan, Bronx, and nearby NJ theaters accessible from NYC. Market slugs added for reliable scraping."
+  }
+}

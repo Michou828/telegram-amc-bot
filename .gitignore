@@ -1,0 +1,13 @@
+.env
+venv/
+__pycache__/
+*.html
+*.log
+*.pyc
+.DS_Store
+drivers/
+*.skill
+amc_bot.db
+cache.json
+research/
+*.txt

@@ -451,7 +451,7 @@ class ShowtimeFetcher:
                       node {{
                         showtimeGroupHeadingAttribute {{ name }}
                         showtimes(first: 100) {{
-                          edges {{ node {{ when businessDate }} }}
+                          edges {{ node {{ when businessDate theatre {{ slug }} }} }}
                         }}
                       }}
                     }}
@@ -461,6 +461,8 @@ class ShowtimeFetcher:
             }}
           }}
         }}"""
+
+        now_utc = datetime.now(tz=ZoneInfo("UTC"))
 
         try:
             data = _graphql(query)
@@ -474,18 +476,21 @@ class ShowtimeFetcher:
             for item in (movie_data["formats"]["items"] or []):
                 for edge in item["groups"]["edges"]:
                     node = edge["node"]
-                    raw_name = node["showtimeGroupHeadingAttribute"]["name"]
-                    format_name = _normalize_api_format(raw_name)
+                    format_name = node["showtimeGroupHeadingAttribute"]["name"]
 
                     times = []
                     for st_edge in node["showtimes"]["edges"]:
                         st = st_edge["node"]
                         if st["businessDate"] != date:
                             continue
+                        if st["theatre"]["slug"] != theater_slug:
+                            continue
                         # Convert UTC ISO to Eastern time HH:MM
                         utc_dt = datetime.fromisoformat(
                             st["when"].replace("Z", "+00:00")
                         )
+                        if utc_dt < now_utc:
+                            continue  # skip past showtimes
                         et_dt = utc_dt.astimezone(NY_TZ)
                         times.append(et_dt.strftime("%H:%M"))
 

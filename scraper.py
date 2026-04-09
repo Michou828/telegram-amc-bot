@@ -7,6 +7,7 @@ except ImportError:
 
 from curl_cffi import requests
 import datetime
+import threading
 import time
 import re
 import json
@@ -24,6 +25,7 @@ class AMCScraper:
         self.last_list_refresh = 0
         self.last_cookie_harvest = 0
         self._harvest_cooldown_until = 0  # runtime only, not persisted
+        self._harvest_lock = threading.Lock()  # prevents concurrent Chrome launches
         self.load_cache()
 
     def load_cache(self):
@@ -70,6 +72,16 @@ class AMCScraper:
         if target_url is None:
             target_url = self._default_harvest_url()
 
+        # Only one Chrome instance at a time — second caller waits, then reuses fresh cookies
+        if not self._harvest_lock.acquire(blocking=True, timeout=300):
+            print("Harvest lock timed out — skipping.")
+            return False
+        try:
+            return self._do_harvest(target_url)
+        finally:
+            self._harvest_lock.release()
+
+    def _do_harvest(self, target_url):
         # Try UC mode first — best stealth, works on Mac/x86
         if SELENIUM_AVAILABLE:
             print("Trying UC mode cookie harvest...")

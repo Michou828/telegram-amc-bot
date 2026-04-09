@@ -66,6 +66,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/remove - Stop tracking a movie\n"
         "/status - Bot status\n"
         "/refresh - Force cookie refresh\n"
+        "/cancel - Cancel current action\n"
         "/help - Show this message"
     )
 
@@ -179,6 +180,7 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 idx = all_movies.index(m)
                 row.append(InlineKeyboardButton(m['name'], callback_data=f"mv_{idx}"))
             keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")])
 
         await status_msg.delete()
         await update.message.reply_text(
@@ -246,7 +248,10 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['movie_name'] = movie_name
     context.user_data['movie_slug'] = movie_slug
-    keyboard = [[InlineKeyboardButton("AMC Lincoln Square 13", callback_data="theater_amc-lincoln-square-13")]]
+    keyboard = [
+        [InlineKeyboardButton("AMC Lincoln Square 13", callback_data="theater_amc-lincoln-square-13")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")]
+    ]
     msg = f"🎬 *{movie_name}*\n\n📍 Select a theater or enter a neighborhood manually:"
     if query:
         await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -293,12 +298,13 @@ async def theater_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['theater_name'] = theater_name
     context.user_data['theater_slug'] = theater_slug
     context.user_data['theater_market'] = theater_market
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")]])
     msg = (f"🎬 *{context.user_data['movie_name']}*\n📍 {theater_name}\n\n"
            f"📅 Enter date (e.g. 4/11) or range (e.g. 4/11-4/15):")
     if query:
-        await query.edit_message_text(msg, parse_mode="Markdown")
+        await query.edit_message_text(msg, reply_markup=cancel_kb, parse_mode="Markdown")
     else:
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg, reply_markup=cancel_kb, parse_mode="Markdown")
     return SELECT_DATE
 
 async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -370,6 +376,7 @@ async def show_format_selection(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard.append(row)
     keyboard.append([InlineKeyboardButton("✅ ALL" if "ALL" in selected else "ALL", callback_data="fmt_ALL")])
     keyboard.append([InlineKeyboardButton("✨ DONE", callback_data="fmt_DONE")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")])
     msg = "🎬 Select formats to track (click multiple):"
     if update.callback_query:
         await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -409,6 +416,12 @@ async def format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Action cancelled.")
+    return ConversationHandler.END
+
+async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Action cancelled.")
     return ConversationHandler.END
 
 # --- POLLING LOGIC ---
@@ -519,17 +532,21 @@ if __name__ == "__main__":
         ],
         states={
             SELECT_MOVIE: [
+                CallbackQueryHandler(cancel_callback, pattern="^cancel_flow$"),
                 CallbackQueryHandler(movie_selected, pattern="^mv_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, movie_selected)
             ],
             SELECT_THEATER: [
+                CallbackQueryHandler(cancel_callback, pattern="^cancel_flow$"),
                 CallbackQueryHandler(theater_selected, pattern="^theater_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, theater_selected)
             ],
             SELECT_DATE: [
+                CallbackQueryHandler(cancel_callback, pattern="^cancel_flow$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, date_entered)
             ],
             SELECT_FORMAT: [
+                CallbackQueryHandler(cancel_callback, pattern="^cancel_flow$"),
                 CallbackQueryHandler(format_callback, pattern="^fmt_")
             ]
         },

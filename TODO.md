@@ -26,12 +26,17 @@
 - [x] Immediate Feedback: Trigger poll instantly after tracking setup
 - [x] Date Validation: Past date rejection and range support (`M/D-M/D`)
 
-## Phase 4: Raspberry Pi Deployment [PENDING]
-- [ ] Performance Tuning: Final RAM footprint check
-- [ ] ARM Compatibility: Verify `curl_cffi` wheel on Pi architecture
-- [ ] Systemd Service: Automated startup script
-- [ ] Error Recovery: Automated Selenium refresh on long-term cookie expiry
+## Phase 4: Raspberry Pi Deployment [COMPLETED]
+- [x] ARM Compatibility: `curl_cffi` wheel verified on Pi Zero 2 W (aarch64)
+- [x] ARM Chrome: System `chromium` + `chromedriver` via `apt` — seleniumbase x86 driver bypassed
+- [x] OOM Protection: `threading.Lock` mutex prevents concurrent Chrome launches (512MB RAM)
+- [x] ChromeDriver Timeout Fix: `page_load_strategy="none"` prevents 120s read timeout on slow Pi
+- [x] Harvest URL Fix: Harvest from showtime page (not `/movies`) to get `QueueITAccepted` cookie
+- [x] Systemd Service: `amc-showtime-bot.service` with venv Python, auto-restart
+- [x] Error Recovery: 30-min cooldown after failed harvest; `/refresh` command for manual re-harvest
 
-## Phase 5: Polish & Feature Expansion [PENDING]
-- [ ] Direct Booking Links: Refining the Next.js deep link format
-- [ ] Maintenance Mode: Command to force cookie refresh manually
+## Phase 5: Polish & Feature Expansion [IN PROGRESS]
+- [x] Maintenance Mode: `/refresh` command to force cookie harvest manually
+- [x] `🆕` Badge: Formats first seen within 24h marked in both `/check` and poll notifications
+- [ ] Direct Booking Links: Refining the Next.js deep link format for ticket purchase URLs
+- [ ] `harvest.py`: Standalone Mac script for manual cookie refresh and transfer to Pi

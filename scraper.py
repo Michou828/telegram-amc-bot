@@ -3,15 +3,18 @@ try:
     SELENIUM_AVAILABLE = True
 except ImportError:
     SELENIUM_AVAILABLE = False
-    print("Warning: seleniumbase not installed. Cookie harvesting disabled — curl_cffi only.")
+    print("Warning: seleniumbase not installed. Will use system Chrome fallback.")
 
 from curl_cffi import requests
+import datetime
 import time
 import re
 import json
 import os
+import shutil
 
 CACHE_FILE = "cache.json"
+HARVEST_COOLDOWN = 1800  # 30 min cooldown after a failed harvest
 
 class AMCScraper:
     def __init__(self):
@@ -20,6 +23,7 @@ class AMCScraper:
         self.movie_list_cache = {"now-playing": [], "coming-soon": []}
         self.last_list_refresh = 0
         self.last_cookie_harvest = 0
+        self._harvest_cooldown_until = 0  # runtime only, not persisted
         self.load_cache()
 
     def load_cache(self):
@@ -49,24 +53,73 @@ class AMCScraper:
         except Exception as e:
             print(f"Failed to save cache: {e}")
 
-    def harvest_cookies(self, target_url="https://www.amctheatres.com/movies"):
-        if not SELENIUM_AVAILABLE:
-            print("Cookie harvesting skipped: seleniumbase not installed.")
-            return False
-        print("Refreshing cookies with stealth browser...")
+    def _default_harvest_url(self):
+        """Use a showtime page — required to trigger QueueITAccepted cookie."""
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        return f"https://www.amctheatres.com/movie-theatres/new-york-city/amc-lincoln-square-13/showtimes?date={today}"
+
+    def _store_cookies(self, cookie_list):
+        self.cookies = {c['name']: c['value'] for c in cookie_list}
+        for name, value in self.cookies.items():
+            self.session.cookies.set(name, value, domain=".amctheatres.com")
+        self.last_cookie_harvest = time.time()
+        self.save_cache()
+        print(f"Stored {len(self.cookies)} cookies.")
+
+    def harvest_cookies(self, target_url=None):
+        if target_url is None:
+            target_url = self._default_harvest_url()
+
+        # Try UC mode first — best stealth, works on Mac/x86
+        if SELENIUM_AVAILABLE:
+            print("Trying UC mode cookie harvest...")
+            try:
+                with SB(uc=True, headless=True) as sb:
+                    sb.uc_open_with_reconnect(target_url, 4)
+                    time.sleep(15)
+                    sb_cookies = sb.get_cookies()
+                    self._store_cookies(sb_cookies)
+                    return True
+            except Exception as e:
+                print(f"UC mode failed: {e} — trying system Chrome fallback...")
+
+        # Fallback: raw selenium with system chromedriver (ARM-compatible, Pi)
+        return self._harvest_with_system_chrome(target_url)
+
+    def _harvest_with_system_chrome(self, target_url):
         try:
-            with SB(uc=True, headless=True) as sb:
-                sb.uc_open_with_reconnect(target_url, 4)
-                time.sleep(10)
-                sb_cookies = sb.get_cookies()
-                self.cookies = {c['name']: c['value'] for c in sb_cookies}
-                for name, value in self.cookies.items():
-                    self.session.cookies.set(name, value, domain=".amctheatres.com")
-                self.last_cookie_harvest = time.time()
-                self.save_cache()
-                return True
+            from selenium import webdriver
+            from selenium.webdriver.chrome.service import Service as ChromeService
+            from selenium.webdriver.chrome.options import Options
+
+            chromium_bin = (shutil.which("chromium") or
+                            shutil.which("chromium-browser") or
+                            "/usr/bin/chromium")
+            chromedriver_bin = shutil.which("chromedriver") or "/usr/bin/chromedriver"
+
+            print(f"Starting headless Chrome ({chromium_bin}) with driver ({chromedriver_bin})...")
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.binary_location = chromium_bin
+
+            driver = webdriver.Chrome(service=ChromeService(chromedriver_bin), options=options)
+            driver.get(target_url)
+            time.sleep(30)  # wait for Cloudflare + queue-it to complete
+            selenium_cookies = driver.get_cookies()
+            driver.quit()
+
+            if not selenium_cookies:
+                raise Exception("Browser returned no cookies")
+
+            self._store_cookies(selenium_cookies)
+            return True
+
         except Exception as e:
-            print(f"Cookie harvesting failed: {e}")
+            print(f"System Chrome harvest failed: {e}")
+            self._harvest_cooldown_until = time.time() + HARVEST_COOLDOWN
+            print(f"Harvest cooldown set for {HARVEST_COOLDOWN // 60} minutes.")
             return False
 
     def get_page_data(self, url):
@@ -80,11 +133,18 @@ class AMCScraper:
             response = self.session.get(url, headers=headers, timeout=30)
             if response.status_code == 200 and "cookietest=1" not in response.text:
                 return response.text
-            else:
-                print(f"Got blocked response (status={response.status_code}), attempting cookie harvest...")
-                if self.harvest_cookies(url):
-                    response = self.session.get(url, headers=headers, timeout=30)
-                    return response.text if response.status_code == 200 else None
+
+            # Blocked — check cooldown before attempting harvest
+            if time.time() < self._harvest_cooldown_until:
+                remaining = int((self._harvest_cooldown_until - time.time()) / 60)
+                print(f"Blocked but harvest cooldown active ({remaining}m remaining). Skipping.")
+                return None
+
+            print(f"Blocked (status={response.status_code}), attempting cookie harvest...")
+            if self.harvest_cookies():
+                response = self.session.get(url, headers=headers, timeout=30)
+                return response.text if response.status_code == 200 else None
+
         except Exception as e:
             print(f"Request error: {e}")
         return None

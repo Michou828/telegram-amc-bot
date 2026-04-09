@@ -92,10 +92,12 @@ class AMCScraper:
             from selenium.webdriver.chrome.service import Service as ChromeService
             from selenium.webdriver.chrome.options import Options
 
-            chromium_bin = (shutil.which("chromium") or
-                            shutil.which("chromium-browser") or
-                            "/usr/bin/chromium")
-            chromedriver_bin = shutil.which("chromedriver") or "/usr/bin/chromedriver"
+            # Check system paths first — avoids picking up seleniumbase's bundled x86 drivers
+            system_chromium = next((p for p in ["/usr/bin/chromium", "/usr/bin/chromium-browser"] if os.path.exists(p)), None)
+            chromium_bin = system_chromium or shutil.which("chromium") or shutil.which("chromium-browser")
+
+            system_chromedriver = next((p for p in ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver"] if os.path.exists(p)), None)
+            chromedriver_bin = system_chromedriver or shutil.which("chromedriver")
 
             print(f"Starting headless Chrome ({chromium_bin}) with driver ({chromedriver_bin})...")
             options = Options()

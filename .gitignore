@@ -13,3 +13,6 @@ cache.json
 research/
 *.txt
 !requirements.txt
+docs/
+debug_scrape.py
+debug_*.html

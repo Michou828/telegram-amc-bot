@@ -116,11 +116,15 @@ class AMCScraper:
             options.add_argument("--headless")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--blink-settings=imagesEnabled=false")  # skip images
+            options.add_argument("--js-flags=--max-old-space-size=128")   # limit JS heap
+            options.page_load_strategy = "none"  # don't wait for full page load
             options.binary_location = chromium_bin
 
             driver = webdriver.Chrome(service=ChromeService(chromedriver_bin), options=options)
             driver.get(target_url)
-            time.sleep(30)  # wait for Cloudflare + queue-it to complete
+            time.sleep(45)  # wait for Cloudflare + queue-it JS to complete
             selenium_cookies = driver.get_cookies()
             driver.quit()
 

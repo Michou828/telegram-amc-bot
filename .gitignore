@@ -12,3 +12,4 @@ amc_bot.db
 cache.json
 research/
 *.txt
+!requirements.txt

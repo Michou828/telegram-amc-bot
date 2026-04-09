@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]>=20.0
+curl_cffi>=0.5.9
+seleniumbase
+python-dotenv
+beautifulsoup4

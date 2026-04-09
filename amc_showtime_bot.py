@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import logging
 import asyncio
@@ -18,8 +19,9 @@ from telegram.ext import (
 )
 
 from database import (
-    init_db, add_tracked_movie, get_tracked_movies, 
-    remove_tracked_movie, is_showtime_seen, mark_showtime_seen
+    init_db, add_tracked_movie, get_tracked_movies,
+    remove_tracked_movie, is_showtime_seen, mark_showtime_seen,
+    is_format_new
 )
 from scraper import AMCScraper
 
@@ -32,7 +34,6 @@ if not TOKEN:
     print("Error: BOT_TOKEN not found in .env file.")
     exit(1)
 
-# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -52,6 +53,8 @@ with open('theaters.json', 'r') as f:
 def is_authorized(update: Update):
     return update.effective_user.id == OWNER_ID
 
+# --- COMMANDS ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     await update.message.reply_text(
@@ -62,6 +65,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/list - Show tracked movies\n"
         "/remove - Stop tracking a movie\n"
         "/status - Bot status\n"
+        "/refresh - Force cookie refresh\n"
         "/help - Show this message"
     )
 
@@ -71,10 +75,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     tracked = get_tracked_movies()
+
+    cookie_age = "Never harvested"
+    if scraper.last_cookie_harvest > 0:
+        age_mins = int((time.time() - scraper.last_cookie_harvest) / 60)
+        if age_mins < 60:
+            cookie_age = f"{age_mins}m ago"
+        else:
+            cookie_age = f"{age_mins // 60}h {age_mins % 60}m ago"
+
     await update.message.reply_text(
         f"Bot status: RUNNING\n"
-        f"Tracking {len(tracked)} tasks.\n"
-        f"Last check: {context.bot_data.get('last_check', 'Never')}"
+        f"Tracking {len(tracked)} task(s).\n"
+        f"Last poll: {context.bot_data.get('last_check', 'Never')}\n"
+        f"Cookies last harvested: {cookie_age}"
     )
 
 async def list_tracked(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,12 +97,13 @@ async def list_tracked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not tracked:
         await update.message.reply_text("You are not tracking any movies.")
         return
-    
+
     msg = "Current tracking tasks:\n"
-    for t in tracked:
-        msg += f"\nID: {t[0]} | {t[2]}\n📍 {t[4]}\n📅 {t[6]}\n🎬 {t[7]}\n"
-    
-    await update.message.reply_text(msg)
+    for row in tracked:
+        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, formats, created_at = row
+        msg += f"\n*#{track_id}* {movie_name}\n📍 {theater_name}\n📅 {date_range}  🎬 {formats}\n"
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def remove_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -96,46 +111,60 @@ async def remove_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not tracked:
         await update.message.reply_text("Nothing to remove.")
         return
-    
+
     keyboard = []
-    for t in tracked:
-        btn_text = f"{t[2]} @ {t[4]} ({t[6]})"
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"remove_{t[0]}")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a task to remove:", reply_markup=reply_markup)
+    for row in tracked:
+        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, formats, created_at = row
+        btn_text = f"{movie_name} @ {theater_name} ({date_range})"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"remove_{track_id}")])
+
+    await update.message.reply_text("Select a task to remove:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_authorized(update): return
     await query.answer()
-    
+
     track_id = int(query.data.replace("remove_", ""))
     remove_tracked_movie(track_id)
-    await query.edit_message_text(f"Task {track_id} removed successfully.")
+    await query.edit_message_text(f"Task #{track_id} removed.")
+
+async def refresh_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return
+    status_msg = await update.message.reply_text(
+        "🔄 Refreshing cookies with stealth browser...\nThis may take 15-20 seconds."
+    )
+    success = await asyncio.to_thread(scraper.harvest_cookies)
+    if success:
+        await status_msg.edit_text("✅ Cookies refreshed successfully!")
+    else:
+        await status_msg.edit_text("❌ Cookie refresh failed. Check logs for details.")
 
 # --- TRACK / CHECK FLOW ---
 
 async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return ConversationHandler.END
-    
-    context.user_data['action'] = update.message.text.split()[0][1:] # 'track' or 'check'
-    
-    status_msg = await update.message.reply_text("🤖 Fetching movie lists from AMC...\nPlease wait, this may take up to 20s if we need to refresh session cookies.")
-    
+
+    context.user_data['action'] = update.message.text.split()[0][1:]  # 'track' or 'check'
+
+    status_msg = await update.message.reply_text(
+        "🤖 Fetching movie lists from AMC...\n"
+        "Please wait, this may take up to 20s if we need to refresh session cookies."
+    )
+
     try:
         full_now_playing = await asyncio.to_thread(scraper.get_movies_list, "now-playing")
         full_coming_soon = await asyncio.to_thread(scraper.get_movies_list, "coming-soon")
-        
+
         seen_slugs = set()
         all_movies = []
         for m in (full_now_playing + full_coming_soon):
             if m['slug'] not in seen_slugs:
                 all_movies.append(m)
                 seen_slugs.add(m['slug'])
-        
+
         context.user_data['movie_list'] = all_movies
-        
+
         seen_btn_slugs = set()
         button_movies = []
         for m in (full_now_playing[:10] + full_coming_soon[:5]):
@@ -150,12 +179,11 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 idx = all_movies.index(m)
                 row.append(InlineKeyboardButton(m['name'], callback_data=f"mv_{idx}"))
             keyboard.append(row)
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
+
         await status_msg.delete()
         await update.message.reply_text(
             "🎬 Select a movie or enter the name manually:",
-            reply_markup=reply_markup
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return SELECT_MOVIE
     except Exception as e:
@@ -168,7 +196,7 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     movie_slug = None
     movie_name = None
     all_movies = context.user_data.get('movie_list', [])
-    
+
     if query:
         await query.answer()
         try:
@@ -182,14 +210,14 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clean_input = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text).lower()
         clean_input = re.sub(r'[^a-z0-9 ]', '', clean_input).strip()
         input_tokens = set(clean_input.split())
-        
+
         matches = []
         for m in all_movies:
             name_norm = re.sub(r'[^a-z0-9 ]', '', m['name'].lower())
             slug_norm = m['slug'].replace('-', ' ')
             if clean_input in name_norm or all(t in name_norm or t in slug_norm for t in input_tokens):
                 if m not in matches: matches.append(m)
-        
+
         if not matches:
             names = [m['name'] for m in all_movies]
             fuzzy = difflib.get_close_matches(clean_input, names, n=5, cutoff=0.4)
@@ -198,7 +226,9 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if m['name'] == fn and m not in matches: matches.append(m)
 
         if not matches:
-            await update.message.reply_text(f"❌ Could not find a movie matching \"{text}\". Try again or pick from the list.")
+            await update.message.reply_text(
+                f"❌ Could not find a movie matching \"{text}\". Try again or pick from the list."
+            )
             return SELECT_MOVIE
         elif len(matches) == 1:
             movie_name, movie_slug = matches[0]['name'], matches[0]['slug']
@@ -208,18 +238,20 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for m in matches[:10]:
                 idx = all_movies.index(m)
                 keyboard.append([InlineKeyboardButton(m['name'], callback_data=f"mv_{idx}")])
-            await update.message.reply_text(f"🔍 Multiple matches for \"{text}\":", reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.message.reply_text(
+                f"🔍 Multiple matches for \"{text}\":",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return SELECT_MOVIE
-    
+
     context.user_data['movie_name'] = movie_name
     context.user_data['movie_slug'] = movie_slug
     keyboard = [[InlineKeyboardButton("AMC Lincoln Square 13", callback_data="theater_amc-lincoln-square-13")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     msg = f"🎬 *{movie_name}*\n\n📍 Select a theater or enter a neighborhood manually:"
     if query:
-        await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     return SELECT_THEATER
 
 async def theater_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,7 +259,7 @@ async def theater_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     theater_slug = None
     theater_name = None
     theater_market = None
-    
+
     if query:
         await query.answer()
         theater_slug = query.data.replace("theater_", "")
@@ -253,13 +285,16 @@ async def theater_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             theater_slug = best_match['slug']
             theater_market = best_match.get('market', 'new-york-city')
         else:
-            await update.message.reply_text("❌ Could not find that theater. Please try again or enter a neighborhood.")
+            await update.message.reply_text(
+                "❌ Could not find that theater. Please try again or enter a neighborhood."
+            )
             return SELECT_THEATER
 
     context.user_data['theater_name'] = theater_name
     context.user_data['theater_slug'] = theater_slug
     context.user_data['theater_market'] = theater_market
-    msg = f"🎬 *{context.user_data['movie_name']}*\n📍 {theater_name}\n\n📅 Enter date (e.g. 4/11) or range (e.g. 4/11-4/15):"
+    msg = (f"🎬 *{context.user_data['movie_name']}*\n📍 {theater_name}\n\n"
+           f"📅 Enter date (e.g. 4/11) or range (e.g. 4/11-4/15):")
     if query:
         await query.edit_message_text(msg, parse_mode="Markdown")
     else:
@@ -271,27 +306,45 @@ async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = context.user_data['action']
     dates = get_dates_from_range(text)
     if not dates:
-        await update.message.reply_text("❌ Invalid date format. Use M/D (e.g., 4/11) or M/D-M/D (e.g., 4/11-4/13).")
+        await update.message.reply_text(
+            "❌ Invalid date format. Use M/D (e.g., 4/11) or M/D-M/D (e.g., 4/11-4/13)."
+        )
         return SELECT_DATE
     now = datetime.date.today()
     first_date = datetime.datetime.strptime(dates[0], "%Y-%m-%d").date()
     if first_date < now:
-        await update.message.reply_text(f"❌ The date *{dates[0]}* is in the past. Please enter a future date.", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"❌ The date *{dates[0]}* is in the past. Please enter a future date.",
+            parse_mode="Markdown"
+        )
         return SELECT_DATE
+
     context.user_data['date_range'] = text
+
     if action == 'check':
-        status_msg = await update.message.reply_text(f"🔍 Checking showtimes for *{context.user_data['movie_name']}*...\nPlease wait.")
+        status_msg = await update.message.reply_text(
+            f"🔍 Checking showtimes for *{context.user_data['movie_name']}*...\nPlease wait.",
+            parse_mode="Markdown"
+        )
         try:
             found_any = False
             for date in dates:
-                user_data_copy = context.user_data.copy()
+                user_data_copy = dict(context.user_data)
                 user_data_copy['date_range'] = date
                 results = await asyncio.to_thread(run_single_check_sync, user_data_copy)
                 if results:
                     found_any = True
-                    msg = f"🎬 *{context.user_data['movie_name']}*\n📍 {context.user_data['theater_name']}\n📅 {date}\n"
+                    movie_slug = context.user_data['movie_slug']
+                    theater_slug = context.user_data['theater_slug']
+                    msg = (f"🎬 *{context.user_data['movie_name']}*\n"
+                           f"📍 {context.user_data['theater_name']}\n📅 {date}\n")
                     for fmt, times in results.items():
-                        msg += f"\n*{fmt}*\n{', '.join(times)}\n"
+                        badge = "🆕 " if is_format_new(movie_slug, theater_slug, date, fmt) else ""
+                        msg += f"\n{badge}*{fmt}*\n{', '.join(times)}\n"
+                        # Mark as seen so future checks and polls track newness correctly
+                        for t in times:
+                            if not is_showtime_seen(movie_slug, theater_slug, date, fmt, t):
+                                mark_showtime_seen(movie_slug, theater_slug, date, fmt, t)
                     await update.message.reply_text(msg, parse_mode="Markdown")
                 await asyncio.sleep(1)
             if not found_any:
@@ -310,16 +363,18 @@ async def show_format_selection(update: Update, context: ContextTypes.DEFAULT_TY
     selected = context.user_data.get('selected_formats', [])
     keyboard = []
     for f_list in [["IMAX", "Dolby"], ["70mm", "Laser"]]:
-        row = [InlineKeyboardButton(f"✅ {f}" if f in selected else f, callback_data=f"fmt_{f}") for f in f_list]
+        row = [
+            InlineKeyboardButton(f"✅ {f}" if f in selected else f, callback_data=f"fmt_{f}")
+            for f in f_list
+        ]
         keyboard.append(row)
     keyboard.append([InlineKeyboardButton("✅ ALL" if "ALL" in selected else "ALL", callback_data="fmt_ALL")])
     keyboard.append([InlineKeyboardButton("✨ DONE", callback_data="fmt_DONE")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
     msg = "🎬 Select formats to track (click multiple):"
     if update.callback_query:
-        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+        await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        await update.message.reply_text(msg, reply_markup=reply_markup)
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECT_FORMAT
 
 async def format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -327,19 +382,20 @@ async def format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     fmt = query.data.replace("fmt_", "")
     selected = context.user_data.get('selected_formats', [])
+
     if fmt == "DONE":
         fmts_str = ",".join(selected) or "ALL"
-        add_tracked_movie(OWNER_ID, context.user_data['movie_name'], context.user_data['movie_slug'], 
-                          context.user_data['theater_name'], context.user_data['theater_slug'], 
-                          context.user_data['date_range'], fmts_str)
+        add_tracked_movie(
+            OWNER_ID,
+            context.user_data['movie_name'], context.user_data['movie_slug'],
+            context.user_data['theater_name'], context.user_data['theater_slug'],
+            context.user_data['date_range'], fmts_str
+        )
         msg = (f"✅ *TRACKING STARTED*\n\n🎬 *{context.user_data['movie_name']}*\n"
                f"📍 {context.user_data['theater_name']}\n📅 {context.user_data['date_range']}\n\n"
                f"*Formats:* {fmts_str}\n\nI will notify you as soon as new showtimes appear!")
         await query.edit_message_text(msg, parse_mode="Markdown")
-        
-        # Trigger immediate poll for the new tracking task
         asyncio.create_task(polling_task(context))
-        
         return ConversationHandler.END
     elif fmt == "ALL":
         selected = ["ALL"] if "ALL" not in selected else []
@@ -347,6 +403,7 @@ async def format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "ALL" in selected: selected.remove("ALL")
         if fmt in selected: selected.remove(fmt)
         else: selected.append(fmt)
+
     context.user_data['selected_formats'] = selected
     return await show_format_selection(update, context)
 
@@ -367,102 +424,128 @@ def run_single_check_sync(user_data):
     html = scraper.get_page_data(url)
     if not html: return None
     all_data = scraper.parse_showtimes(html)
-    # Exact slug match
-    if movie_slug in all_data:
-        return all_data[movie_slug]
-    return None
+    return all_data.get(movie_slug)
 
 def parse_date_input(text):
     try:
         now = datetime.datetime.now()
         if "/" in text:
             parts = text.split("/")
-            month, day, year = int(parts[0]), int(parts[1]), now.year
-            if month < now.month: year += 1
+            month, day = int(parts[0]), int(parts[1])
+            year = now.year if month >= now.month else now.year + 1
             return datetime.date(year, month, day).strftime("%Y-%m-%d")
-    except: pass
+    except:
+        pass
     return text
 
 def get_dates_from_range(text):
     dates = []
     try:
         if "-" in text:
-            start_str, end_str = text.split("-")
-            start_parsed, end_parsed = parse_date_input(start_str.strip()), parse_date_input(end_str.strip())
+            start_str, end_str = text.split("-", 1)
+            start_parsed = parse_date_input(start_str.strip())
+            end_parsed = parse_date_input(end_str.strip())
             start_dt = datetime.datetime.strptime(start_parsed, "%Y-%m-%d").date()
             end_dt = datetime.datetime.strptime(end_parsed, "%Y-%m-%d").date()
             curr = start_dt
             while curr <= end_dt:
                 dates.append(curr.strftime("%Y-%m-%d"))
                 curr += datetime.timedelta(days=1)
-        else: dates.append(parse_date_input(text.strip()))
-    except Exception as e: logger.error(f"Error parsing date range {text}: {e}")
+        else:
+            dates.append(parse_date_input(text.strip()))
+    except Exception as e:
+        logger.error(f"Error parsing date range '{text}': {e}")
     return dates
 
 async def polling_task(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Starting background polling cycle...")
     tracked = get_tracked_movies()
     market_map = {t['slug']: t.get('market', 'new-york-city') for t in THEATERS_DATA}
-    for t in tracked:
-        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, target_formats, _ = t
+
+    for row in tracked:
+        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, target_formats, _ = row
         market = market_map.get(theater_slug, 'new-york-city')
         dates = get_dates_from_range(date_range)
+
         for date in dates:
             url = f"https://www.amctheatres.com/movie-theatres/{market}/{theater_slug}/showtimes?date={date}"
             html = await asyncio.to_thread(scraper.get_page_data, url)
             if not html: continue
+
             all_data = scraper.parse_showtimes(html)
             new_showtimes_found = {}
-            
-            # Use exact slug matching from the updated scraper
+
             if movie_slug in all_data:
-                formats = all_data[movie_slug]
-                for fmt_name, times in formats.items():
+                for fmt_name, times in all_data[movie_slug].items():
                     if target_formats != "ALL":
                         target_fmts_list = [f.strip().lower() for f in target_formats.split(",")]
-                        if not any(tf in fmt_name.lower() for tf in target_fmts_list): continue
+                        if not any(tf in fmt_name.lower() for tf in target_fmts_list):
+                            continue
                     for time_val in times:
                         if not is_showtime_seen(movie_slug, theater_slug, date, fmt_name, time_val):
-                            if fmt_name not in new_showtimes_found: new_showtimes_found[fmt_name] = []
-                            new_showtimes_found[fmt_name].append(time_val)
+                            new_showtimes_found.setdefault(fmt_name, []).append(time_val)
                             mark_showtime_seen(movie_slug, theater_slug, date, fmt_name, time_val)
-            
+
             if new_showtimes_found:
-                msg = (f"🔔 *NEW SHOWTIMES FOUND!*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n")
+                msg = f"🔔 *NEW SHOWTIMES FOUND!*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
                 for fmt, times in new_showtimes_found.items():
-                    msg += f"\n*{fmt}*\n{', '.join(times)}\n"
+                    badge = "🆕 " if is_format_new(movie_slug, theater_slug, date, fmt) else ""
+                    msg += f"\n{badge}*{fmt}*\n{', '.join(times)}\n"
                 msg += f"\n[Book Tickets](https://www.amctheatres.com/movies/{movie_slug})"
-                try: await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
-                except Exception as e: logger.error(f"Failed to send grouped notification to {user_id}: {e}")
+                try:
+                    await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"Failed to send notification to {user_id}: {e}")
+
             await asyncio.sleep(2)
+
     context.bot_data['last_check'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 async def post_init(application):
     if OWNER_ID:
-        try: await application.bot.send_message(chat_id=OWNER_ID, text="🤖 Bot Started!\n\nSend /start")
-        except Exception as e: logger.error(f"Failed to send startup message: {e}")
+        try:
+            await application.bot.send_message(chat_id=OWNER_ID, text="🤖 Bot Started!\n\nSend /start")
+        except Exception as e:
+            logger.error(f"Failed to send startup message: {e}")
 
 if __name__ == "__main__":
     init_db()
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("track", initiate_flow), CommandHandler("check", initiate_flow)],
+        entry_points=[
+            CommandHandler("track", initiate_flow),
+            CommandHandler("check", initiate_flow)
+        ],
         states={
-            SELECT_MOVIE: [CallbackQueryHandler(movie_selected, pattern="^mv_"), MessageHandler(filters.TEXT & ~filters.COMMAND, movie_selected)],
-            SELECT_THEATER: [CallbackQueryHandler(theater_selected, pattern="^theater_"), MessageHandler(filters.TEXT & ~filters.COMMAND, theater_selected)],
-            SELECT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, date_entered)],
-            SELECT_FORMAT: [CallbackQueryHandler(format_callback, pattern="^fmt_")]
+            SELECT_MOVIE: [
+                CallbackQueryHandler(movie_selected, pattern="^mv_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, movie_selected)
+            ],
+            SELECT_THEATER: [
+                CallbackQueryHandler(theater_selected, pattern="^theater_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, theater_selected)
+            ],
+            SELECT_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, date_entered)
+            ],
+            SELECT_FORMAT: [
+                CallbackQueryHandler(format_callback, pattern="^fmt_")
+            ]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False
     )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("list", list_tracked))
     app.add_handler(CommandHandler("remove", remove_movie))
+    app.add_handler(CommandHandler("refresh", refresh_cookies))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))
     app.add_handler(conv_handler)
     app.job_queue.run_repeating(polling_task, interval=600, first=10)
-    print("\n" + "="*30 + "\n🤖 AMC Monitor running!\n💬 Message your bot in Telegram\n🛑 Ctrl+C to stop\n" + "="*30 + "\n")
+
+    print("\n" + "="*30 + "\n🤖 AMC Showtime Monitor running!\n💬 Message your bot in Telegram\n🛑 Ctrl+C to stop\n" + "="*30 + "\n")
     app.run_polling()

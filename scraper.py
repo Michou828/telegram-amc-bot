@@ -1,10 +1,14 @@
-from seleniumbase import SB
+try:
+    from seleniumbase import SB
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
+    print("Warning: seleniumbase not installed. Cookie harvesting disabled — curl_cffi only.")
+
 from curl_cffi import requests
-from bs4 import BeautifulSoup
 import time
 import re
 import json
-import random
 import os
 
 CACHE_FILE = "cache.json"
@@ -15,6 +19,7 @@ class AMCScraper:
         self.cookies = {}
         self.movie_list_cache = {"now-playing": [], "coming-soon": []}
         self.last_list_refresh = 0
+        self.last_cookie_harvest = 0
         self.load_cache()
 
     def load_cache(self):
@@ -25,6 +30,7 @@ class AMCScraper:
                     self.cookies = data.get("cookies", {})
                     self.movie_list_cache = data.get("movie_list", {"now-playing": [], "coming-soon": []})
                     self.last_list_refresh = data.get("last_list_refresh", 0)
+                    self.last_cookie_harvest = data.get("last_cookie_harvest", 0)
                     for name, value in self.cookies.items():
                         self.session.cookies.set(name, value, domain=".amctheatres.com")
             except Exception as e:
@@ -35,7 +41,8 @@ class AMCScraper:
             data = {
                 "cookies": self.cookies,
                 "movie_list": self.movie_list_cache,
-                "last_list_refresh": self.last_list_refresh
+                "last_list_refresh": self.last_list_refresh,
+                "last_cookie_harvest": self.last_cookie_harvest,
             }
             with open(CACHE_FILE, 'w') as f:
                 json.dump(data, f)
@@ -43,6 +50,9 @@ class AMCScraper:
             print(f"Failed to save cache: {e}")
 
     def harvest_cookies(self, target_url="https://www.amctheatres.com/movies"):
+        if not SELENIUM_AVAILABLE:
+            print("Cookie harvesting skipped: seleniumbase not installed.")
+            return False
         print("Refreshing cookies with stealth browser...")
         try:
             with SB(uc=True, headless=True) as sb:
@@ -52,6 +62,7 @@ class AMCScraper:
                 self.cookies = {c['name']: c['value'] for c in sb_cookies}
                 for name, value in self.cookies.items():
                     self.session.cookies.set(name, value, domain=".amctheatres.com")
+                self.last_cookie_harvest = time.time()
                 self.save_cache()
                 return True
         except Exception as e:
@@ -70,6 +81,7 @@ class AMCScraper:
             if response.status_code == 200 and "cookietest=1" not in response.text:
                 return response.text
             else:
+                print(f"Got blocked response (status={response.status_code}), attempting cookie harvest...")
                 if self.harvest_cookies(url):
                     response = self.session.get(url, headers=headers, timeout=30)
                     return response.text if response.status_code == 200 else None
@@ -80,29 +92,25 @@ class AMCScraper:
     def parse_showtimes(self, html):
         """Returns showtimes keyed by movie SLUG for 100% matching accuracy."""
         if not html: return {}
-        
-        results = {} # { movie_slug: { format_name: [times] } }
-        
-        # 1. Extraction from self.__next_f.push scripts
+
+        results = {}  # { movie_slug: { format_name: [times] } }
+
         chunks = re.findall(r'self\.__next_f\.push\(\[\d+,(?:"(.*?)"|null)\]\)', html, re.DOTALL)
         full_data = "".join([c for c in chunks if c]).replace('\\"', '"').replace('\\\\', '\\')
-        
+
         if not full_data: return {}
 
-        # Use the exact working patterns from Phase 1
         movie_matches = list(re.finditer(r'{"avatarImage":{.*?},"name":"([^"]+)","slug":"([^"]+)"', full_data))
         format_matches = list(re.finditer(r'"h3",null,{"id":"[^"]+","children":.*?{"children":"([^"]+)"}', full_data))
         showtime_matches = list(re.finditer(r'{"showtimeId":(\d+),"policyCodes".*?"display":{"time":"([^"]+)","amPm":"([^"]+)"}', full_data))
-        
+
         if not showtime_matches:
-            # Try more lenient showtime pattern
             showtime_matches = list(re.finditer(r'{"showtimeId":(\d+),.*?"display":{"time":"([^"]+)","amPm":"([^"]+)"}', full_data))
 
         for s in showtime_matches:
             time_val = f"{s.group(2)}{s.group(3)}"
             pos = s.start()
-            
-            # Find parent movie (by slug)
+
             current_slug = "unknown"
             movie_pos = -1
             for m in reversed(movie_matches):
@@ -110,21 +118,20 @@ class AMCScraper:
                     current_slug = m.group(2)
                     movie_pos = m.start()
                     break
-            
-            # Find parent format
+
             current_format = "Standard"
             for f in reversed(format_matches):
                 if f.start() < pos and f.start() > movie_pos:
                     current_format = f.group(1).replace('\\u0026', '&')
                     break
-            
+
             if current_slug not in results:
                 results[current_slug] = {}
             if current_format not in results[current_slug]:
                 results[current_slug][current_format] = []
             if time_val not in results[current_slug][current_format]:
                 results[current_slug][current_format].append(time_val)
-                
+
         return results
 
     def get_movies_list(self, list_type="now-playing"):
@@ -134,9 +141,8 @@ class AMCScraper:
         url = f"https://www.amctheatres.com/movies?movie-list={list_type}"
         html = self.get_page_data(url)
         if not html: return self.movie_list_cache.get(list_type, [])
-        
+
         movies = []
-        # Find slugs with IDs
         matches = re.findall(r'/movies/([a-z0-9-]+-(\d+))', html)
         for slug, movie_id in matches:
             name_parts = slug.split('-')[:-1]
@@ -144,7 +150,7 @@ class AMCScraper:
             movie_obj = {"name": name, "slug": slug}
             if movie_obj not in movies:
                 movies.append(movie_obj)
-        
+
         self.movie_list_cache[list_type] = movies
         self.last_list_refresh = time.time()
         self.save_cache()

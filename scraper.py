@@ -12,7 +12,11 @@ import time
 import re
 import json
 import os
+import platform
 import shutil
+
+# UC mode requires x86 — skip entirely on ARM to avoid seleniumbase downloading an x86 driver then failing
+_IS_ARM = platform.machine().startswith(("aarch", "arm"))
 
 CACHE_FILE = "cache.json"
 HARVEST_COOLDOWN = 1800  # 30 min cooldown after a failed harvest
@@ -95,8 +99,8 @@ class AMCScraper:
         for attempt in range(1, 3):
             print(f"[Harvest] Attempt {attempt}/2...")
 
-            # UC mode only on attempt 1 — best stealth, works on Mac/x86
-            if SELENIUM_AVAILABLE and attempt == 1:
+            # UC mode only on attempt 1, and only on x86 — ARM can't run seleniumbase's bundled driver
+            if SELENIUM_AVAILABLE and attempt == 1 and not _IS_ARM:
                 print("[Harvest] Trying UC mode...")
                 try:
                     with SB(uc=True, headless=True) as sb:
@@ -147,18 +151,33 @@ class AMCScraper:
             options = Options()
             options.add_argument("--headless")
             options.add_argument("--no-sandbox")
+            options.add_argument("--disable-setuid-sandbox")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-zygote")           # saves ~30MB on ARM
+            options.add_argument("--single-process")      # fits in 512MB Pi RAM
             options.add_argument("--disable-extensions")
+            options.add_argument("--disable-background-networking")
+            options.add_argument("--disable-default-apps")
+            options.add_argument("--disable-sync")
+            options.add_argument("--no-first-run")
             options.add_argument("--blink-settings=imagesEnabled=false")  # skip images
             options.add_argument("--js-flags=--max-old-space-size=128")   # limit JS heap
             options.page_load_strategy = "none"  # don't wait for full page load
             options.binary_location = chromium_bin
 
-            driver = webdriver.Chrome(service=ChromeService(chromedriver_bin), options=options)
-            driver.get(target_url)
-            time.sleep(wait_secs)  # wait for Cloudflare + queue-it JS to complete
-            selenium_cookies = driver.get_cookies()
-            driver.quit()
+            driver = None
+            try:
+                driver = webdriver.Chrome(service=ChromeService(chromedriver_bin), options=options)
+                driver.get(target_url)
+                time.sleep(wait_secs)  # wait for Cloudflare + queue-it JS to complete
+                selenium_cookies = driver.get_cookies()
+            finally:
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
 
             if not selenium_cookies:
                 raise Exception("Browser returned no cookies")

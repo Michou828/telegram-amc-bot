@@ -21,6 +21,10 @@ _IS_ARM = platform.machine().startswith(("aarch", "arm"))
 CACHE_FILE = "cache.json"
 HARVEST_COOLDOWN = 1800  # 30 min cooldown after a failed harvest
 
+# cf_clearance is bound to the User-Agent used during harvest.
+# curl_cffi impersonates chrome124 on Mac — Chrome must use the same UA so the cookie validates.
+HARVEST_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
 class AMCScraper:
     def __init__(self):
         self.session = requests.Session(impersonate="chrome124")
@@ -168,6 +172,7 @@ class AMCScraper:
             options.add_argument("--disable-default-apps")
             options.add_argument("--disable-sync")
             options.add_argument("--no-first-run")
+            options.add_argument(f"--user-agent={HARVEST_USER_AGENT}")  # must match curl_cffi UA — cf_clearance is UA-bound
             options.add_argument("--blink-settings=imagesEnabled=false")  # skip images
             options.add_argument("--js-flags=--max-old-space-size=128")   # limit JS heap
             options.page_load_strategy = "none"  # don't wait for full page load

@@ -309,37 +309,52 @@ class AMCScraper:
             print(f"[MovieList] {list_type}: both fetches blocked, using cache ({len(self.movie_list_cache.get(list_type, []))} entries)")
             return self.movie_list_cache.get(list_type, [])
 
-        # Extract release dates from RSC chunks (coming-soon pages only)
-        release_dates = {}
-        if list_type == "coming-soon":
-            chunks = re.findall(r'self\.__next_f\.push\(\[\d+,(?:"(.*?)"|null)\]\)', html, re.DOTALL)
-            full_data = "".join([c for c in chunks if c]).replace('\\"', '"').replace('\\\\', '\\')
-            # Try multiple date patterns AMC uses in their JSON data
-            for pattern in [
-                r'"slug":"([a-z0-9-]+-\d+)"[^}]*"releaseDate":"(\d{4}-\d{2}-\d{2})"',
-                r'"slug":"([a-z0-9-]+-\d+)"[^}]*"openDate":"(\d{4}-\d{2}-\d{2})"',
-                r'"releaseDate":"(\d{4}-\d{2}-\d{2})"[^}]*"slug":"([a-z0-9-]+-\d+)"',
-            ]:
-                for m in re.finditer(pattern, full_data):
-                    slug_g, date_g = (m.group(1), m.group(2)) if 'slug' in pattern.split('"releaseDate"')[0] else (m.group(2), m.group(1))
-                    release_dates[slug_g] = date_g
+        # Parse RSC chunks — same approach as parse_showtimes, gets proper names + release dates
+        chunks = re.findall(r'self\.__next_f\.push\(\[\d+,(?:"(.*?)"|null)\]\)', html, re.DOTALL)
+        full_data = "".join([c for c in chunks if c]).replace('\\"', '"').replace('\\\\', '\\')
 
         movies = []
         seen_slugs = set()
-        matches = re.findall(r'/movies/([a-z0-9-]+-(\d+))', html)
-        for slug, movie_id in matches:
-            if slug in seen_slugs:
-                continue
-            seen_slugs.add(slug)
-            name_parts = slug.split('-')[:-1]
-            name = " ".join(name_parts).title().replace("A M C", "AMC").replace("Imax", "IMAX").replace("Q A", "Q&A")
-            movie_obj = {
-                "name": name,
-                "slug": slug,
-                "url": f"https://www.amctheatres.com/movies/{slug}",
-                "release_date": release_dates.get(slug),
-            }
-            movies.append(movie_obj)
+
+        if full_data:
+            # Primary: parse structured movie objects from RSC data
+            for m in re.finditer(r'"name":"([^"]+)","slug":"([a-z0-9][a-z0-9-]+)"', full_data):
+                name, slug = m.group(1), m.group(2)
+                if slug in seen_slugs:
+                    continue
+                # Skip non-movie slugs (theater slugs, format slugs, etc.)
+                if any(kw in slug for kw in ('amc-', 'dolby', 'imax', 'prime', 'laser')):
+                    continue
+                seen_slugs.add(slug)
+                # Extract release date near this match
+                release_date = None
+                nearby = full_data[max(0, m.start()-200):m.end()+200]
+                rd = re.search(r'"(?:releaseDate|openDate)"\s*:\s*"(\d{4}-\d{2}-\d{2})"', nearby)
+                if rd:
+                    release_date = rd.group(1)
+                movies.append({
+                    "name": name,
+                    "slug": slug,
+                    "url": f"https://www.amctheatres.com/movies/{slug}",
+                    "release_date": release_date,
+                })
+
+        if not movies:
+            # Fallback: scan for /movies/ URL patterns (old behavior)
+            print(f"[MovieList] {list_type}: RSC parse found nothing, falling back to URL scan")
+            for slug in dict.fromkeys(re.findall(r'/movies/([a-z0-9][a-z0-9-]+)', html)):
+                if slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+                name = " ".join(slug.split('-')).title().replace("A M C", "AMC").replace("Imax", "IMAX")
+                movies.append({
+                    "name": name,
+                    "slug": slug,
+                    "url": f"https://www.amctheatres.com/movies/{slug}",
+                    "release_date": None,
+                })
+
+        print(f"[MovieList] {list_type}: parsed {len(movies)} movies (RSC chunks: {len(chunks)})")
 
         self.movie_list_cache[list_type] = movies
         self.last_list_refresh = time.time()

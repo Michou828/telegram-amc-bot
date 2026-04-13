@@ -32,6 +32,7 @@ class AMCScraper:
         self.last_failed_fetch = 0       # last time get_page_data returned None
         self.last_fail_reason = ""       # human-readable reason for last failure
         self._harvest_cooldown_until = 0  # runtime only, not persisted
+        self._session_harvest_at = 0     # runtime only — set only when Chrome actually ran this session
         self._harvest_lock = threading.Lock()  # prevents concurrent Chrome launches
         self.load_cache()
 
@@ -78,6 +79,7 @@ class AMCScraper:
         for name, value in self.cookies.items():
             self.session.cookies.set(name, value, domain=".amctheatres.com")
         self.last_cookie_harvest = time.time()
+        self._session_harvest_at = time.time()  # marks that Chrome actually ran this session
         self.save_cache()
         cookie_names = ", ".join(sorted(self.cookies.keys()))
         print(f"Stored {len(self.cookies)} cookies: {cookie_names}")
@@ -91,9 +93,9 @@ class AMCScraper:
             print("Harvest lock timed out — skipping.")
             return False
         try:
-            # If another caller harvested while we waited for the lock, reuse those cookies
-            if self.last_cookie_harvest and time.time() - self.last_cookie_harvest < 300:
-                print("[Harvest] Cookies just harvested by another caller — reusing.")
+            # If another caller ran Chrome while we waited for the lock, reuse those cookies
+            if self._session_harvest_at and time.time() - self._session_harvest_at < 300:
+                print("[Harvest] Cookies just harvested by another caller this session — reusing.")
                 return True
             return self._do_harvest(target_url)
         finally:

@@ -125,7 +125,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  Last updated: {list_age}"
         + (f" (valid {list_valid_for}m more)" if scraper.last_list_refresh else "") + "\n"
         f"  Now Playing: {len(scraper.movie_list_cache.get('now-playing', []))}, "
-        f"Coming Soon: {len(scraper.movie_list_cache.get('coming-soon', []))}\n\n"
+        f"Coming Soon: {len(scraper.movie_list_cache.get('coming-soon', []))}, "
+        f"Events: {len(scraper.movie_list_cache.get('events', []))}\n\n"
         f"📡 *Polling*\n"
         f"  Last poll: {context.bot_data.get('last_check', 'Never')}\n"
         f"  Consecutive failures: {failures}\n"
@@ -242,68 +243,79 @@ async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _sync_movie_registry(lists):
     """Update movie_registry from fresh list data. Called after refreshmovielist."""
     coming_soon = lists.get("coming-soon", [])
-
     logger.info(f"[Registry] Syncing: {len(coming_soon)} coming-soon movies")
-
     added = 0
     for m in coming_soon:
         try:
-            upsert_registry_movie(m['slug'], m['name'], "future_release",
+            status = "advanced_tickets" if m.get("has_advanced_tickets") else "future_release"
+            upsert_registry_movie(m['slug'], m['name'], status,
                                   release_date=m.get("release_date"),
                                   url=m.get("url"))
             added += 1
         except Exception as e:
             logger.error(f"[Registry] Failed to upsert {m['slug']}: {e}")
-
     logger.info(f"[Registry] Sync done: {added} added/updated")
     return added
 
 async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     status_msg = await update.message.reply_text(
-        "🔄 Refreshing movie lists (Now Playing, Coming Soon)..."
+        "🔄 Refreshing movie lists (Now Playing, Coming Soon, Events)..."
     )
     counts = await asyncio.to_thread(scraper.refresh_movie_list)
     if any(v > 0 for v in counts.values()):
-        # Sync registry with fresh data
-        registry_count = _sync_movie_registry(scraper.movie_list_cache)
-        lines = "\n".join(
-            f"  {'Now Playing' if k == 'now-playing' else k.replace('-', ' ').title()}: {v}"
-            for k, v in counts.items()
-        )
+        _sync_movie_registry(scraper.movie_list_cache)
+        label = {"now-playing": "Now Playing", "coming-soon": "Coming Soon", "events": "Events"}
+        lines = "\n".join(f"  {label.get(k, k)}: {v}" for k, v in counts.items())
         reg_movies = get_registry_movies()
         await status_msg.edit_text(
             f"✅ Movie lists refreshed!\n\n{lines}\n\n"
             f"Registry: {len(reg_movies)} upcoming movies tracked"
         )
     else:
-        await status_msg.edit_text("❌ Failed to fetch movie lists. Cookies may need refreshing — try /refresh first.")
+        await status_msg.edit_text("❌ Failed to fetch movie lists. Cookies may need refreshing — try /refreshcookies first.")
 
 async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
-    movies = get_registry_movies()
-    if not movies:
+    now_playing = scraper.movie_list_cache.get("now-playing", [])
+    coming_soon = scraper.movie_list_cache.get("coming-soon", [])
+    events = scraper.movie_list_cache.get("events", [])
+
+    if not any([now_playing, coming_soon, events]):
         await update.message.reply_text(
-            "Registry is empty.\n\nRun /refreshmovielist to populate it from AMC's coming-soon list."
+            "Movie list is empty.\n\nRun /refreshmovielist to fetch from AMC."
         )
         return
 
-    advanced = [(slug, name, release_date, url) for slug, name, status, first, last, release_date, url in movies if status == "advanced_tickets"]
-    future = [(slug, name, release_date, url) for slug, name, status, first, last, release_date, url in movies if status == "future_release"]
+    lines = [f"*AMC Movies*\n"]
 
-    # Build lines, then send in chunks to stay under Telegram's 4096 char limit
-    lines = [f"*Upcoming Movie Registry* ({len(movies)} total)\n"]
-    if advanced:
-        lines.append(f"\n🎟 *Advanced Tickets Available* ({len(advanced)})")
-        for slug, name, release_date, url in advanced:
-            date_str = f" — opens {release_date}" if release_date else ""
-            lines.append(f"  • [{name}]({url}){date_str}")
-    if future:
-        lines.append(f"\n🔮 *Future Releases* ({len(future)})")
-        for slug, name, release_date, url in future:
-            date_str = f" — {release_date}" if release_date else " — TBD"
-            lines.append(f"  • [{name}]({url}){date_str}")
-    lines.append(f"\n_Use /refreshmovielist to sync._")
+    if now_playing:
+        lines.append(f"🎬 *Now Playing* ({len(now_playing)})")
+        for m in now_playing:
+            lines.append(f"  • [{m['name']}]({m['url']})")
+
+    if coming_soon:
+        adv = [m for m in coming_soon if m.get("has_advanced_tickets")]
+        future = [m for m in coming_soon if not m.get("has_advanced_tickets")]
+        if adv:
+            lines.append(f"\n🎟 *Advance Tickets On Sale* ({len(adv)})")
+            for m in adv:
+                date_str = f" — opens {m['release_date']}" if m.get("release_date") else ""
+                lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+        if future:
+            lines.append(f"\n🔮 *Coming Soon* ({len(future)})")
+            for m in future:
+                date_str = f" — {m['release_date']}" if m.get("release_date") else " — TBD"
+                lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+
+    if events:
+        lines.append(f"\n🎭 *Events* ({len(events)})")
+        for m in events:
+            date_str = f" — {m['release_date']}" if m.get("release_date") else ""
+            lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+
+    age = _age_str(scraper.last_list_refresh) if scraper.last_list_refresh else "never"
+    lines.append(f"\n_Last updated: {age} — /refreshmovielist to sync_")
 
     chunk = ""
     for line in lines:
@@ -332,10 +344,11 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         full_now_playing = await asyncio.to_thread(scraper.get_movies_list, "now-playing")
         full_coming_soon = await asyncio.to_thread(scraper.get_movies_list, "coming-soon")
+        full_events = await asyncio.to_thread(scraper.get_movies_list, "events")
 
         seen_slugs = set()
         all_movies = []
-        for m in (full_now_playing + full_coming_soon):
+        for m in (full_now_playing + full_coming_soon + full_events):
             if m['slug'] not in seen_slugs:
                 all_movies.append(m)
                 seen_slugs.add(m['slug'])
@@ -344,7 +357,7 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         seen_btn_slugs = set()
         button_movies = []
-        for m in (full_now_playing[:10] + full_coming_soon[:6]):
+        for m in (full_now_playing[:8] + full_coming_soon[:6]):
             if m['slug'] not in seen_btn_slugs:
                 button_movies.append(m)
                 seen_btn_slugs.add(m['slug'])

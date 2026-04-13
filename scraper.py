@@ -30,7 +30,7 @@ class AMCScraper:
     def __init__(self):
         self.session = requests.Session(impersonate="chrome124")
         self.cookies = {}
-        self.movie_list_cache = {"now-playing": [], "coming-soon": []}
+        self.movie_list_cache = {"now-playing": [], "coming-soon": [], "events": []}
         self.last_list_refresh = 0
         self.last_cookie_harvest = 0
         self.last_successful_fetch = 0   # last time get_page_data returned HTML
@@ -47,7 +47,12 @@ class AMCScraper:
                 with open(CACHE_FILE, 'r') as f:
                     data = json.load(f)
                     self.cookies = data.get("cookies", {})
-                    self.movie_list_cache = data.get("movie_list", {"now-playing": [], "coming-soon": []})
+                    cached_lists = data.get("movie_list", {})
+                    self.movie_list_cache = {
+                        "now-playing": cached_lists.get("now-playing", []),
+                        "coming-soon": cached_lists.get("coming-soon", []),
+                        "events": cached_lists.get("events", []),
+                    }
                     self.last_list_refresh = data.get("last_list_refresh", 0)
                     self.last_cookie_harvest = data.get("last_cookie_harvest", 0)
                     self.last_successful_fetch = data.get("last_successful_fetch", 0)
@@ -294,84 +299,92 @@ class AMCScraper:
 
         return results
 
+    def _graphql_movies(self, availability, first=500):
+        """Query AMC's GraphQL API for movies by availability type. Returns list of edge nodes."""
+        query = (
+            "{ viewer { movies(availability: " + availability + ", first: " + str(first) + ") {"
+            " edges { node { name slug absoluteWebsiteUrl releaseDateUtc } }"
+            " } } }"
+        )
+        try:
+            resp = self.session.post(
+                "https://graph.amctheatres.com",
+                json={"query": query},
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "https://www.amctheatres.com",
+                    "Referer": "https://www.amctheatres.com/",
+                },
+                timeout=15,
+            )
+            data = resp.json()
+            if "errors" in data:
+                print(f"[GraphQL] {availability}: {data['errors'][0]['message']}")
+                return []
+            return data["data"]["viewer"]["movies"]["edges"]
+        except Exception as e:
+            print(f"[GraphQL] {availability}: exception={e}")
+            return []
+
+    def _movie_from_node(self, node, has_advanced_tickets=False):
+        return {
+            "name": node["name"],
+            "slug": node["slug"],
+            "url": node.get("absoluteWebsiteUrl") or f"https://www.amctheatres.com/movies/{node['slug']}",
+            "release_date": node.get("releaseDateUtc"),
+            "has_advanced_tickets": has_advanced_tickets,
+        }
+
     def get_movies_list(self, list_type="now-playing"):
         if time.time() - self.last_list_refresh < 43200 and self.movie_list_cache.get(list_type):
             return self.movie_list_cache[list_type]
 
-        url = f"https://www.amctheatres.com/movies?movie-list={list_type}"
-        html = self.get_page_data(url)
-        if not html:
-            # Movies URL sometimes needs an extra moment after harvest — retry once
-            print(f"[MovieList] {list_type}: first fetch blocked, retrying in 5s...")
-            time.sleep(5)
-            html = self.get_page_data(url)
-        if not html:
-            print(f"[MovieList] {list_type}: both fetches blocked, using cache ({len(self.movie_list_cache.get(list_type, []))} entries)")
-            return self.movie_list_cache.get(list_type, [])
-
-        # Parse RSC chunks — same approach as parse_showtimes, gets proper names + release dates
-        chunks = re.findall(r'self\.__next_f\.push\(\[\d+,(?:"(.*?)"|null)\]\)', html, re.DOTALL)
-        full_data = "".join([c for c in chunks if c]).replace('\\"', '"').replace('\\\\', '\\')
-
         movies = []
         seen_slugs = set()
 
-        if full_data:
-            # Primary: parse structured movie objects from RSC data
-            for m in re.finditer(r'"name":"([^"]+)","slug":"([a-z0-9][a-z0-9-]+)"', full_data):
-                name, slug = m.group(1), m.group(2)
-                if slug in seen_slugs:
-                    continue
-                # Skip non-movie slugs (theater slugs, format slugs, etc.)
-                if any(kw in slug for kw in ('amc-', 'dolby', 'imax', 'prime', 'laser')):
-                    continue
-                seen_slugs.add(slug)
-                # Extract release date near this match
-                release_date = None
-                nearby = full_data[max(0, m.start()-200):m.end()+200]
-                rd = re.search(r'"(?:releaseDate|openDate)"\s*:\s*"(\d{4}-\d{2}-\d{2})"', nearby)
-                if rd:
-                    release_date = rd.group(1)
-                movies.append({
-                    "name": name,
-                    "slug": slug,
-                    "url": f"https://www.amctheatres.com/movies/{slug}",
-                    "release_date": release_date,
-                })
+        if list_type == "now-playing":
+            for edge in self._graphql_movies("NOW_PLAYING"):
+                node = edge["node"]
+                if node["slug"] not in seen_slugs:
+                    seen_slugs.add(node["slug"])
+                    movies.append(self._movie_from_node(node))
 
-        if not movies:
-            # Fallback: scan for /movies/ URL patterns (old behavior)
-            print(f"[MovieList] {list_type}: RSC parse found nothing, falling back to URL scan")
-            for slug in dict.fromkeys(re.findall(r'/movies/([a-z0-9][a-z0-9-]+)', html)):
-                if slug in seen_slugs:
-                    continue
-                seen_slugs.add(slug)
-                name = " ".join(slug.split('-')).title().replace("A M C", "AMC").replace("Imax", "IMAX")
-                movies.append({
-                    "name": name,
-                    "slug": slug,
-                    "url": f"https://www.amctheatres.com/movies/{slug}",
-                    "release_date": None,
-                })
+        elif list_type == "coming-soon":
+            adv_edges = self._graphql_movies("ADVANCE_TICKETS")
+            adv_slugs = {e["node"]["slug"] for e in adv_edges}
+            for edge in self._graphql_movies("COMING_SOON"):
+                node = edge["node"]
+                if node["slug"] not in seen_slugs:
+                    seen_slugs.add(node["slug"])
+                    movies.append(self._movie_from_node(node, has_advanced_tickets=node["slug"] in adv_slugs))
+            # Include any ADVANCE_TICKETS-only movies not in COMING_SOON
+            for edge in adv_edges:
+                node = edge["node"]
+                if node["slug"] not in seen_slugs:
+                    seen_slugs.add(node["slug"])
+                    movies.append(self._movie_from_node(node, has_advanced_tickets=True))
 
-        print(f"[MovieList] {list_type}: parsed {len(movies)} movies (RSC chunks: {len(chunks)})")
+        elif list_type == "events":
+            for edge in self._graphql_movies("EVENTS"):
+                node = edge["node"]
+                if node["slug"] not in seen_slugs:
+                    seen_slugs.add(node["slug"])
+                    movies.append(self._movie_from_node(node))
 
-        self.movie_list_cache[list_type] = movies
-        self.last_list_refresh = time.time()
-        self.save_cache()
-        return movies
+        print(f"[MovieList] {list_type}: {len(movies)} movies via GraphQL")
+        if movies:
+            self.movie_list_cache[list_type] = movies
+            self.last_list_refresh = time.time()
+            self.save_cache()
+        return movies or self.movie_list_cache.get(list_type, [])
 
     def refresh_movie_list(self):
-        """Force-fetch now-playing and coming-soon lists, bypassing the 12h cache. Returns counts dict."""
+        """Force-fetch all three movie lists, bypassing the 12h cache. Returns counts dict."""
+        self.last_list_refresh = 0
         counts = {}
-        for list_type in ("now-playing", "coming-soon"):
-            saved = self.last_list_refresh
-            self.last_list_refresh = 0
+        for list_type in ("now-playing", "coming-soon", "events"):
             movies = self.get_movies_list(list_type)
-            if not movies:
-                self.last_list_refresh = saved
             counts[list_type] = len(movies)
-            print(f"[MovieList] {list_type}: {len(movies)} movies")
         return counts
 
 if __name__ == "__main__":

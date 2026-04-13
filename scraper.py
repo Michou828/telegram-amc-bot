@@ -80,6 +80,7 @@ class AMCScraper:
 
     def _store_cookies(self, cookie_list):
         self.cookies = {c['name']: c['value'] for c in cookie_list}
+        self.session.cookies.clear()  # remove stale cookies before loading fresh ones
         for name, value in self.cookies.items():
             self.session.cookies.set(name, value, domain=".amctheatres.com")
         self.last_cookie_harvest = time.time()
@@ -173,6 +174,7 @@ class AMCScraper:
             options.add_argument("--disable-sync")
             options.add_argument("--no-first-run")
             options.add_argument(f"--user-agent={HARVEST_USER_AGENT}")  # must match curl_cffi UA — cf_clearance is UA-bound
+            options.add_argument("--disable-blink-features=AutomationControlled")  # hide navigator.webdriver from Cloudflare
             options.add_argument("--blink-settings=imagesEnabled=false")  # skip images
             options.add_argument("--js-flags=--max-old-space-size=128")   # limit JS heap
             options.page_load_strategy = "none"  # don't wait for full page load

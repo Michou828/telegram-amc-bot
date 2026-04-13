@@ -90,6 +90,10 @@ class AMCScraper:
             print("Harvest lock timed out — skipping.")
             return False
         try:
+            # If another caller harvested while we waited for the lock, reuse those cookies
+            if self.last_cookie_harvest and time.time() - self.last_cookie_harvest < 300:
+                print("[Harvest] Cookies just harvested by another caller — reusing.")
+                return True
             return self._do_harvest(target_url)
         finally:
             self._harvest_lock.release()

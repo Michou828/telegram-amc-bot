@@ -7,6 +7,7 @@ except ImportError:
 
 from curl_cffi import requests
 import datetime
+import subprocess
 import threading
 import time
 import re
@@ -191,6 +192,11 @@ class AMCScraper:
                         driver.quit()
                     except Exception:
                         pass
+                # Hard kill any surviving chromium/chromedriver processes — driver.quit()
+                # can silently fail if Chrome crashed (OOM etc.), leaving RAM-hungry zombies
+                for proc in ("chromedriver", "chromium", "chromium-browser"):
+                    subprocess.run(["pkill", "-f", proc], capture_output=True)
+                print("[Harvest] Chrome processes cleaned up.")
 
             if not selenium_cookies:
                 raise Exception("Browser returned no cookies")

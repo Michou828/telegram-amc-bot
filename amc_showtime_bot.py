@@ -237,23 +237,28 @@ async def cancel_refresh_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text("Cancelled.")
 
 def _sync_movie_registry(lists):
-    """Update movie_registry from fresh list data. Called after refreshlist."""
+    """Update movie_registry from fresh list data. Called after refreshmovielist."""
     now_playing = {m['slug'] for m in lists.get("now-playing", [])}
     coming_soon = lists.get("coming-soon", [])
 
-    # Add/update coming-soon movies in registry
+    logger.info(f"[Registry] Syncing: {len(coming_soon)} coming-soon, {len(now_playing)} now-playing")
+
     added = 0
     for m in coming_soon:
         if m['slug'] not in now_playing:
-            upsert_registry_movie(m['slug'], m['name'], "future_release")
-            added += 1
+            try:
+                upsert_registry_movie(m['slug'], m['name'], "future_release")
+                added += 1
+            except Exception as e:
+                logger.error(f"[Registry] Failed to upsert {m['slug']}: {e}")
 
-    # Remove any registry movies that have moved to now-playing
-    removed = 0
     for slug in now_playing:
-        remove_registry_movie(slug)
-        removed += 1  # remove_registry_movie is a no-op if not in registry, but count is optimistic
+        try:
+            remove_registry_movie(slug)
+        except Exception as e:
+            logger.error(f"[Registry] Failed to remove {slug}: {e}")
 
+    logger.info(f"[Registry] Sync done: {added} added/updated")
     return added
 
 async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,7 +287,7 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
     movies = get_registry_movies()
     if not movies:
         await update.message.reply_text(
-            "Registry is empty.\n\nRun /refreshlist to populate it from AMC's coming-soon list."
+            "Registry is empty.\n\nRun /refreshmovielist to populate it from AMC's coming-soon list."
         )
         return
 
@@ -301,7 +306,7 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
             first_date = first_seen[:10]
             msg += f"  • {name} _(tracked since {first_date})_\n"
 
-    msg += f"\n_Use /refreshlist to sync with AMC's current lists._"
+    msg += f"\n_Use /refreshmovielist to sync with AMC's current lists._"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # --- TRACK / CHECK FLOW ---

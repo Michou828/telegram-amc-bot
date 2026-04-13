@@ -238,25 +238,17 @@ async def cancel_refresh_callback(update: Update, context: ContextTypes.DEFAULT_
 
 def _sync_movie_registry(lists):
     """Update movie_registry from fresh list data. Called after refreshmovielist."""
-    now_playing = {m['slug'] for m in lists.get("now-playing", [])}
     coming_soon = lists.get("coming-soon", [])
 
-    logger.info(f"[Registry] Syncing: {len(coming_soon)} coming-soon, {len(now_playing)} now-playing")
+    logger.info(f"[Registry] Syncing: {len(coming_soon)} coming-soon movies")
 
     added = 0
     for m in coming_soon:
-        if m['slug'] not in now_playing:
-            try:
-                upsert_registry_movie(m['slug'], m['name'], "future_release")
-                added += 1
-            except Exception as e:
-                logger.error(f"[Registry] Failed to upsert {m['slug']}: {e}")
-
-    for slug in now_playing:
         try:
-            remove_registry_movie(slug)
+            upsert_registry_movie(m['slug'], m['name'], "future_release")
+            added += 1
         except Exception as e:
-            logger.error(f"[Registry] Failed to remove {slug}: {e}")
+            logger.error(f"[Registry] Failed to upsert {m['slug']}: {e}")
 
     logger.info(f"[Registry] Sync done: {added} added/updated")
     return added

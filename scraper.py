@@ -30,7 +30,7 @@ class AMCScraper:
     def __init__(self):
         self.session = requests.Session(impersonate="chrome124")
         self.cookies = {}
-        self.movie_list_cache = {"now-playing": [], "coming-soon": [], "events": []}
+        self.movie_list_cache = {"now-playing": [], "coming-soon": []}
         self.last_list_refresh = 0
         self.last_cookie_harvest = 0
         self.last_successful_fetch = 0   # last time get_page_data returned HTML
@@ -347,15 +347,14 @@ class AMCScraper:
         return movies
 
     def refresh_movie_list(self):
-        """Force-fetch all three movie lists, bypassing the 12h cache. Returns counts dict."""
+        """Force-fetch now-playing and coming-soon lists, bypassing the 12h cache. Returns counts dict."""
         counts = {}
-        for list_type in ("now-playing", "events", "coming-soon"):
-            # Temporarily zero out the timestamp so get_movies_list skips the cache check
+        for list_type in ("now-playing", "coming-soon"):
             saved = self.last_list_refresh
             self.last_list_refresh = 0
             movies = self.get_movies_list(list_type)
             if not movies:
-                self.last_list_refresh = saved  # restore if fetch failed
+                self.last_list_refresh = saved
             counts[list_type] = len(movies)
             print(f"[MovieList] {list_type}: {len(movies)} movies")
         return counts

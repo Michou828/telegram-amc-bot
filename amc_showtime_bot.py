@@ -125,7 +125,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  Last updated: {list_age}"
         + (f" (valid {list_valid_for}m more)" if scraper.last_list_refresh else "") + "\n"
         f"  Now Playing: {len(scraper.movie_list_cache.get('now-playing', []))}, "
-        f"Events: {len(scraper.movie_list_cache.get('events', []))}, "
         f"Coming Soon: {len(scraper.movie_list_cache.get('coming-soon', []))}\n\n"
         f"📡 *Polling*\n"
         f"  Last poll: {context.bot_data.get('last_check', 'Never')}\n"
@@ -262,7 +261,7 @@ def _sync_movie_registry(lists):
 async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     status_msg = await update.message.reply_text(
-        "🔄 Refreshing movie lists (Now Playing, Events, Coming Soon)..."
+        "🔄 Refreshing movie lists (Now Playing, Coming Soon)..."
     )
     counts = await asyncio.to_thread(scraper.refresh_movie_list)
     if any(v > 0 for v in counts.values()):
@@ -332,12 +331,11 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         full_now_playing = await asyncio.to_thread(scraper.get_movies_list, "now-playing")
-        full_events = await asyncio.to_thread(scraper.get_movies_list, "events")
         full_coming_soon = await asyncio.to_thread(scraper.get_movies_list, "coming-soon")
 
         seen_slugs = set()
         all_movies = []
-        for m in (full_now_playing + full_events + full_coming_soon):
+        for m in (full_now_playing + full_coming_soon):
             if m['slug'] not in seen_slugs:
                 all_movies.append(m)
                 seen_slugs.add(m['slug'])
@@ -346,7 +344,7 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         seen_btn_slugs = set()
         button_movies = []
-        for m in (full_now_playing[:8] + full_events[:4] + full_coming_soon[:4]):
+        for m in (full_now_playing[:10] + full_coming_soon[:6]):
             if m['slug'] not in seen_btn_slugs:
                 button_movies.append(m)
                 seen_btn_slugs.add(m['slug'])

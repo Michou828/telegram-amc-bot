@@ -39,7 +39,25 @@ def init_db():
             name TEXT NOT NULL,
             status TEXT NOT NULL,
             first_seen_at TEXT NOT NULL,
-            last_seen_at TEXT NOT NULL
+            last_seen_at TEXT NOT NULL,
+            release_date TEXT,
+            url TEXT
+        )
+    ''')
+    # Migrate existing installs that don't have the new columns yet
+    for col, typedef in [("release_date", "TEXT"), ("url", "TEXT")]:
+        try:
+            cursor.execute(f"ALTER TABLE movie_registry ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass  # column already exists
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS recent_movies (
+            slug TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            use_count INTEGER DEFAULT 1
         )
     ''')
 
@@ -107,24 +125,25 @@ def is_format_new(movie_slug, theater_slug, date, format_name, hours=24):
     first_seen = datetime.datetime.fromisoformat(row[0])
     return (datetime.datetime.now() - first_seen).total_seconds() < hours * 3600
 
-def upsert_registry_movie(slug, name, status="future_release"):
+def upsert_registry_movie(slug, name, status="future_release", release_date=None, url=None):
     """Insert or update a movie in the registry. Won't downgrade advanced_tickets → future_release."""
     now = datetime.datetime.now().isoformat()
+    if url is None:
+        url = f"https://www.amctheatres.com/movies/{slug}"
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('SELECT status FROM movie_registry WHERE slug = ?', (slug,))
     row = cursor.fetchone()
     if row:
-        # Don't downgrade advanced_tickets back to future_release
         new_status = row[0] if row[0] == "advanced_tickets" and status == "future_release" else status
         cursor.execute(
-            'UPDATE movie_registry SET name = ?, status = ?, last_seen_at = ? WHERE slug = ?',
-            (name, new_status, now, slug)
+            'UPDATE movie_registry SET name = ?, status = ?, last_seen_at = ?, release_date = COALESCE(?, release_date), url = ? WHERE slug = ?',
+            (name, new_status, now, release_date, url, slug)
         )
     else:
         cursor.execute(
-            'INSERT INTO movie_registry (slug, name, status, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)',
-            (slug, name, status, now, now)
+            'INSERT INTO movie_registry (slug, name, status, first_seen_at, last_seen_at, release_date, url) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (slug, name, status, now, now, release_date, url)
         )
     conn.commit()
     conn.close()
@@ -150,14 +169,49 @@ def upgrade_registry_to_advanced(slug):
     return updated > 0
 
 def get_registry_movies():
-    """Returns all registry movies ordered by status (advanced_tickets first) then name."""
+    """Returns all registry movies ordered by status (advanced_tickets first) then release_date, then name."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT slug, name, status, first_seen_at, last_seen_at
+        SELECT slug, name, status, first_seen_at, last_seen_at, release_date, url
         FROM movie_registry
-        ORDER BY CASE status WHEN 'advanced_tickets' THEN 0 ELSE 1 END, name
+        ORDER BY CASE status WHEN 'advanced_tickets' THEN 0 ELSE 1 END,
+                 CASE WHEN release_date IS NULL THEN 1 ELSE 0 END,
+                 release_date,
+                 name
     ''')
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def add_recent_movie(slug, name, url):
+    """Upsert a recently searched/tracked movie."""
+    now = datetime.datetime.now().isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('SELECT use_count FROM recent_movies WHERE slug = ?', (slug,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            'UPDATE recent_movies SET name = ?, url = ?, last_used_at = ?, use_count = ? WHERE slug = ?',
+            (name, url, now, row[0] + 1, slug)
+        )
+    else:
+        cursor.execute(
+            'INSERT INTO recent_movies (slug, name, url, last_used_at, use_count) VALUES (?, ?, ?, ?, 1)',
+            (slug, name, url, now)
+        )
+    conn.commit()
+    conn.close()
+
+def get_recent_movies(limit=8):
+    """Return recently used movies, most recent first."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT slug, name, url, last_used_at, use_count FROM recent_movies ORDER BY last_used_at DESC LIMIT ?',
+        (limit,)
+    )
     rows = cursor.fetchall()
     conn.close()
     return rows

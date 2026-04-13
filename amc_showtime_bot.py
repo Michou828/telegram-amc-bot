@@ -22,7 +22,8 @@ from database import (
     init_db, add_tracked_movie, get_tracked_movies,
     remove_tracked_movie, is_showtime_seen, mark_showtime_seen,
     is_format_new, upsert_registry_movie, remove_registry_movie,
-    upgrade_registry_to_advanced, get_registry_movies
+    upgrade_registry_to_advanced, get_registry_movies,
+    add_recent_movie, get_recent_movies
 )
 from scraper import AMCScraper
 
@@ -236,6 +237,9 @@ async def cancel_refresh_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     await query.edit_message_text("Cancelled.")
 
+async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+
 def _sync_movie_registry(lists):
     """Update movie_registry from fresh list data. Called after refreshmovielist."""
     coming_soon = lists.get("coming-soon", [])
@@ -245,7 +249,9 @@ def _sync_movie_registry(lists):
     added = 0
     for m in coming_soon:
         try:
-            upsert_registry_movie(m['slug'], m['name'], "future_release")
+            upsert_registry_movie(m['slug'], m['name'], "future_release",
+                                  release_date=m.get("release_date"),
+                                  url=m.get("url"))
             added += 1
         except Exception as e:
             logger.error(f"[Registry] Failed to upsert {m['slug']}: {e}")
@@ -283,19 +289,21 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    advanced = [(slug, name, first, last) for slug, name, status, first, last in movies if status == "advanced_tickets"]
-    future = [(slug, name, first, last) for slug, name, status, first, last in movies if status == "future_release"]
+    advanced = [(slug, name, release_date, url) for slug, name, status, first, last, release_date, url in movies if status == "advanced_tickets"]
+    future = [(slug, name, release_date, url) for slug, name, status, first, last, release_date, url in movies if status == "future_release"]
 
     # Build lines, then send in chunks to stay under Telegram's 4096 char limit
     lines = [f"*Upcoming Movie Registry* ({len(movies)} total)\n"]
     if advanced:
         lines.append(f"\n🎟 *Advanced Tickets Available* ({len(advanced)})")
-        for slug, name, first_seen, _ in advanced:
-            lines.append(f"  • {name} _(since {first_seen[:10]})_")
+        for slug, name, release_date, url in advanced:
+            date_str = f" — opens {release_date}" if release_date else ""
+            lines.append(f"  • [{name}]({url}){date_str}")
     if future:
         lines.append(f"\n🔮 *Future Releases* ({len(future)})")
-        for slug, name, first_seen, _ in future:
-            lines.append(f"  • {name} _(since {first_seen[:10]})_")
+        for slug, name, release_date, url in future:
+            date_str = f" — {release_date}" if release_date else " — TBD"
+            lines.append(f"  • [{name}]({url}){date_str}")
     lines.append(f"\n_Use /refreshmovielist to sync._")
 
     chunk = ""
@@ -344,6 +352,16 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 seen_btn_slugs.add(m['slug'])
 
         keyboard = []
+
+        # Recent movies section
+        recents = get_recent_movies(limit=4)
+        if recents:
+            keyboard.append([InlineKeyboardButton("🕐 Recently Used:", callback_data="noop")])
+            for i in range(0, len(recents), 2):
+                row = [InlineKeyboardButton(recents[j][1], callback_data=f"mv_recent_{recents[j][0]}")
+                       for j in range(i, min(i + 2, len(recents)))]
+                keyboard.append(row)
+
         for i in range(0, len(button_movies), 2):
             row = []
             for m in button_movies[i:i+2]:
@@ -354,7 +372,7 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await status_msg.delete()
         await update.message.reply_text(
-            "🎬 Select a movie or enter the name manually:",
+            "🎬 Select a movie, type a name, or paste an AMC URL:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return SELECT_MOVIE
@@ -371,53 +389,82 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query:
         await query.answer()
-        try:
-            idx = int(query.data.replace("mv_", ""))
-            movie_name, movie_slug = all_movies[idx]['name'], all_movies[idx]['slug']
-        except:
-            await query.edit_message_text("❌ Selection expired. Please start over with /track or /check.")
-            return ConversationHandler.END
-    else:
-        text = update.message.text
-        clean_input = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text).lower()
-        clean_input = re.sub(r'[^a-z0-9 ]', '', clean_input).strip()
-        input_tokens = set(clean_input.split())
-
-        matches = []
-        for m in all_movies:
-            name_norm = re.sub(r'[^a-z0-9 ]', '', m['name'].lower())
-            slug_norm = m['slug'].replace('-', ' ')
-            if clean_input in name_norm or all(t in name_norm or t in slug_norm for t in input_tokens):
-                if m not in matches: matches.append(m)
-
-        if not matches:
-            names = [m['name'] for m in all_movies]
-            fuzzy = difflib.get_close_matches(clean_input, names, n=5, cutoff=0.4)
-            for fn in fuzzy:
-                for m in all_movies:
-                    if m['name'] == fn and m not in matches: matches.append(m)
-
-        if not matches:
-            await update.message.reply_text(
-                f"❌ Could not find a movie matching \"{text}\". Try again or pick from the list."
-            )
-            return SELECT_MOVIE
-        elif len(matches) == 1:
-            movie_name, movie_slug = matches[0]['name'], matches[0]['slug']
-            await update.message.reply_text(f"🎯 Matched to: *{movie_name}*", parse_mode="Markdown")
+        if query.data.startswith("mv_recent_"):
+            slug = query.data.replace("mv_recent_", "")
+            # Look up in current list first; fall back to recent_movies DB (movie may be off AMC)
+            match = next((m for m in all_movies if m['slug'] == slug), None)
+            if match:
+                movie_name, movie_slug = match['name'], match['slug']
+            else:
+                recents = get_recent_movies(limit=8)
+                rec = next((r for r in recents if r[0] == slug), None)
+                if rec:
+                    movie_name, movie_slug = rec[1], rec[0]
+                else:
+                    await query.edit_message_text("❌ Could not find that movie. Please search by name.")
+                    return SELECT_MOVIE
         else:
-            keyboard = []
-            for m in matches[:10]:
-                idx = all_movies.index(m)
-                keyboard.append([InlineKeyboardButton(m['name'], callback_data=f"mv_{idx}")])
-            await update.message.reply_text(
-                f"🔍 Multiple matches for \"{text}\":",
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return SELECT_MOVIE
+            try:
+                idx = int(query.data.replace("mv_", ""))
+                movie_name, movie_slug = all_movies[idx]['name'], all_movies[idx]['slug']
+            except:
+                await query.edit_message_text("❌ Selection expired. Please start over.")
+                return ConversationHandler.END
+    else:
+        text = update.message.text.strip()
+
+        # URL or bare slug input — bypass search entirely
+        url_match = re.search(r'amctheatres\.com/movies/([a-z0-9-]+-\d+)', text)
+        slug_match = re.match(r'^([a-z0-9-]+-\d+)$', text.lower())
+        if url_match or slug_match:
+            movie_slug = (url_match or slug_match).group(1)
+            match = next((m for m in all_movies if m['slug'] == movie_slug), None)
+            if match:
+                movie_name = match['name']
+            else:
+                movie_name = " ".join(movie_slug.split('-')[:-1]).title()
+            await update.message.reply_text(f"🎯 Using: *{movie_name}*", parse_mode="Markdown")
+        else:
+            clean_input = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text).lower()
+            clean_input = re.sub(r'[^a-z0-9 ]', '', clean_input).strip()
+            input_tokens = set(clean_input.split())
+
+            matches = []
+            for m in all_movies:
+                name_norm = re.sub(r'[^a-z0-9 ]', '', m['name'].lower())
+                slug_norm = m['slug'].replace('-', ' ')
+                if clean_input in name_norm or all(t in name_norm or t in slug_norm for t in input_tokens):
+                    if m not in matches: matches.append(m)
+
+            if not matches:
+                names = [m['name'] for m in all_movies]
+                fuzzy = difflib.get_close_matches(clean_input, names, n=5, cutoff=0.4)
+                for fn in fuzzy:
+                    for m in all_movies:
+                        if m['name'] == fn and m not in matches: matches.append(m)
+
+            if not matches:
+                await update.message.reply_text(
+                    f"❌ Could not find \"{text}\".\n\nTry a name, paste an AMC URL, or pick from the list."
+                )
+                return SELECT_MOVIE
+            elif len(matches) == 1:
+                movie_name, movie_slug = matches[0]['name'], matches[0]['slug']
+                await update.message.reply_text(f"🎯 Matched to: *{movie_name}*", parse_mode="Markdown")
+            else:
+                keyboard = []
+                for m in matches[:10]:
+                    idx = all_movies.index(m)
+                    keyboard.append([InlineKeyboardButton(m['name'], callback_data=f"mv_{idx}")])
+                await update.message.reply_text(
+                    f"🔍 Multiple matches for \"{text}\":",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return SELECT_MOVIE
 
     context.user_data['movie_name'] = movie_name
     context.user_data['movie_slug'] = movie_slug
+    add_recent_movie(movie_slug, movie_name, f"https://www.amctheatres.com/movies/{movie_slug}")
     keyboard = [
         [InlineKeyboardButton("AMC Lincoln Square 13", callback_data="theater_amc-lincoln-square-13")],
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")]
@@ -770,6 +817,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))
+    app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
     app.add_handler(conv_handler)
     app.add_error_handler(error_handler)
     app.job_queue.run_repeating(polling_task, interval=600, first=10)

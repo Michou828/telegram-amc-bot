@@ -33,6 +33,16 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS movie_registry (
+            slug TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -96,6 +106,61 @@ def is_format_new(movie_slug, theater_slug, date, format_name, hours=24):
         return False
     first_seen = datetime.datetime.fromisoformat(row[0])
     return (datetime.datetime.now() - first_seen).total_seconds() < hours * 3600
+
+def upsert_registry_movie(slug, name, status="future_release"):
+    """Insert or update a movie in the registry. Won't downgrade advanced_tickets → future_release."""
+    now = datetime.datetime.now().isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('SELECT status FROM movie_registry WHERE slug = ?', (slug,))
+    row = cursor.fetchone()
+    if row:
+        # Don't downgrade advanced_tickets back to future_release
+        new_status = row[0] if row[0] == "advanced_tickets" and status == "future_release" else status
+        cursor.execute(
+            'UPDATE movie_registry SET name = ?, status = ?, last_seen_at = ? WHERE slug = ?',
+            (name, new_status, now, slug)
+        )
+    else:
+        cursor.execute(
+            'INSERT INTO movie_registry (slug, name, status, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)',
+            (slug, name, status, now, now)
+        )
+    conn.commit()
+    conn.close()
+
+def remove_registry_movie(slug):
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute('DELETE FROM movie_registry WHERE slug = ?', (slug,))
+    conn.commit()
+    conn.close()
+
+def upgrade_registry_to_advanced(slug):
+    """Mark a registry movie as having advanced tickets. No-op if not in registry."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    now = datetime.datetime.now().isoformat()
+    cursor.execute(
+        'UPDATE movie_registry SET status = ?, last_seen_at = ? WHERE slug = ? AND status = ?',
+        ("advanced_tickets", now, slug, "future_release")
+    )
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+def get_registry_movies():
+    """Returns all registry movies ordered by status (advanced_tickets first) then name."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT slug, name, status, first_seen_at, last_seen_at
+        FROM movie_registry
+        ORDER BY CASE status WHEN 'advanced_tickets' THEN 0 ELSE 1 END, name
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 if __name__ == "__main__":
     init_db()

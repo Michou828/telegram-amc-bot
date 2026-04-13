@@ -21,7 +21,8 @@ from telegram.ext import (
 from database import (
     init_db, add_tracked_movie, get_tracked_movies,
     remove_tracked_movie, is_showtime_seen, mark_showtime_seen,
-    is_format_new
+    is_format_new, upsert_registry_movie, remove_registry_movie,
+    upgrade_registry_to_advanced, get_registry_movies
 )
 from scraper import AMCScraper
 
@@ -67,6 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/status - Bot status\n"
         "/refresh - Force cookie refresh\n"
         "/refreshlist - Refresh movie lists (Now Playing, Events, Coming Soon)\n"
+        "/movies - Show upcoming movie registry\n"
         "/cancel - Cancel current action\n"
         "/help - Show this message"
     )
@@ -234,6 +236,26 @@ async def cancel_refresh_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     await query.edit_message_text("Cancelled.")
 
+def _sync_movie_registry(lists):
+    """Update movie_registry from fresh list data. Called after refreshlist."""
+    now_playing = {m['slug'] for m in lists.get("now-playing", [])}
+    coming_soon = lists.get("coming-soon", [])
+
+    # Add/update coming-soon movies in registry
+    added = 0
+    for m in coming_soon:
+        if m['slug'] not in now_playing:
+            upsert_registry_movie(m['slug'], m['name'], "future_release")
+            added += 1
+
+    # Remove any registry movies that have moved to now-playing
+    removed = 0
+    for slug in now_playing:
+        remove_registry_movie(slug)
+        removed += 1  # remove_registry_movie is a no-op if not in registry, but count is optimistic
+
+    return added
+
 async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     status_msg = await update.message.reply_text(
@@ -241,13 +263,46 @@ async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_T
     )
     counts = await asyncio.to_thread(scraper.refresh_movie_list)
     if any(v > 0 for v in counts.values()):
+        # Sync registry with fresh data
+        registry_count = _sync_movie_registry(scraper.movie_list_cache)
         lines = "\n".join(
             f"  {'Now Playing' if k == 'now-playing' else k.replace('-', ' ').title()}: {v}"
             for k, v in counts.items()
         )
-        await status_msg.edit_text(f"✅ Movie lists refreshed!\n\n{lines}")
+        reg_movies = get_registry_movies()
+        await status_msg.edit_text(
+            f"✅ Movie lists refreshed!\n\n{lines}\n\n"
+            f"Registry: {len(reg_movies)} upcoming movies tracked"
+        )
     else:
         await status_msg.edit_text("❌ Failed to fetch movie lists. Cookies may need refreshing — try /refresh first.")
+
+async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return
+    movies = get_registry_movies()
+    if not movies:
+        await update.message.reply_text(
+            "Registry is empty.\n\nRun /refreshlist to populate it from AMC's coming-soon list."
+        )
+        return
+
+    advanced = [(slug, name, first, last) for slug, name, status, first, last in movies if status == "advanced_tickets"]
+    future = [(slug, name, first, last) for slug, name, status, first, last in movies if status == "future_release"]
+
+    msg = "*Upcoming Movie Registry*\n"
+    if advanced:
+        msg += f"\n🎟 *Advanced Tickets Available* ({len(advanced)})\n"
+        for slug, name, first_seen, _ in advanced:
+            first_date = first_seen[:10]
+            msg += f"  • {name} _(tracked since {first_date})_\n"
+    if future:
+        msg += f"\n🔮 *Future Releases* ({len(future)})\n"
+        for slug, name, first_seen, _ in future:
+            first_date = first_seen[:10]
+            msg += f"  • {name} _(tracked since {first_date})_\n"
+
+    msg += f"\n_Use /refreshlist to sync with AMC's current lists._"
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 # --- TRACK / CHECK FLOW ---
 
@@ -622,6 +677,9 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
             new_showtimes_found = {}
 
             if movie_slug in all_data:
+                # Showtimes detected — upgrade registry status if applicable
+                if upgrade_registry_to_advanced(movie_slug):
+                    logger.info(f"[Registry] {movie_name} upgraded to advanced_tickets")
                 for fmt_name, times in all_data[movie_slug].items():
                     if target_formats != "ALL":
                         target_fmts_list = [f.strip().lower() for f in target_formats.split(",")]
@@ -694,6 +752,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("remove", remove_movie))
     app.add_handler(CommandHandler("refresh", refresh_cookies))
     app.add_handler(CommandHandler("refreshlist", refresh_movie_list_cmd))
+    app.add_handler(CommandHandler("movies", show_movie_registry))
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))

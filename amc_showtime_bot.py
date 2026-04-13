@@ -239,7 +239,7 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_msg = await update.message.reply_text(
         "🤖 Fetching movie lists from AMC...\n"
-        "Please wait, this may take up to 20s if we need to refresh session cookies."
+        "Please wait — up to 90s if cookies need refreshing (Chrome harvest on Pi)."
     )
 
     try:
@@ -563,7 +563,8 @@ POLL_FAILURE_ALERT_THRESHOLD = 3    # alert after this many consecutive failures
 POLL_FAILURE_ALERT_COOLDOWN = 1800  # seconds between repeated alerts
 
 async def polling_task(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Starting background polling cycle...")
+    cookie_age = _age_str(scraper.last_cookie_harvest)
+    logger.info(f"Starting background polling cycle... Cookies: {cookie_age}")
     tracked = get_tracked_movies()
     market_map = {t['slug']: t.get('market', 'new-york-city') for t in THEATERS_DATA}
 

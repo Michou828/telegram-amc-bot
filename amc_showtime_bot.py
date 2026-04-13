@@ -66,6 +66,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/remove - Stop tracking a movie\n"
         "/status - Bot status\n"
         "/refresh - Force cookie refresh\n"
+        "/refreshlist - Refresh movie lists (Now Playing, Events, Coming Soon)\n"
         "/cancel - Cancel current action\n"
         "/help - Show this message"
     )
@@ -119,7 +120,10 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  Harvest cooldown: {cooldown_str}\n\n"
         f"🎬 *Movie list*\n"
         f"  Last updated: {list_age}"
-        + (f" (valid {list_valid_for}m more)" if scraper.last_list_refresh else "") + "\n\n"
+        + (f" (valid {list_valid_for}m more)" if scraper.last_list_refresh else "") + "\n"
+        f"  Now Playing: {len(scraper.movie_list_cache.get('now-playing', []))}, "
+        f"Events: {len(scraper.movie_list_cache.get('events', []))}, "
+        f"Coming Soon: {len(scraper.movie_list_cache.get('coming-soon', []))}\n\n"
         f"📡 *Polling*\n"
         f"  Last poll: {context.bot_data.get('last_check', 'Never')}\n"
         f"  Consecutive failures: {failures}\n"
@@ -230,6 +234,21 @@ async def cancel_refresh_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     await query.edit_message_text("Cancelled.")
 
+async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return
+    status_msg = await update.message.reply_text(
+        "🔄 Refreshing movie lists (Now Playing, Events, Coming Soon)..."
+    )
+    counts = await asyncio.to_thread(scraper.refresh_movie_list)
+    if any(v > 0 for v in counts.values()):
+        lines = "\n".join(
+            f"  {'Now Playing' if k == 'now-playing' else k.replace('-', ' ').title()}: {v}"
+            for k, v in counts.items()
+        )
+        await status_msg.edit_text(f"✅ Movie lists refreshed!\n\n{lines}")
+    else:
+        await status_msg.edit_text("❌ Failed to fetch movie lists. Cookies may need refreshing — try /refresh first.")
+
 # --- TRACK / CHECK FLOW ---
 
 async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -244,11 +263,12 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         full_now_playing = await asyncio.to_thread(scraper.get_movies_list, "now-playing")
+        full_events = await asyncio.to_thread(scraper.get_movies_list, "events")
         full_coming_soon = await asyncio.to_thread(scraper.get_movies_list, "coming-soon")
 
         seen_slugs = set()
         all_movies = []
-        for m in (full_now_playing + full_coming_soon):
+        for m in (full_now_playing + full_events + full_coming_soon):
             if m['slug'] not in seen_slugs:
                 all_movies.append(m)
                 seen_slugs.add(m['slug'])
@@ -257,7 +277,7 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         seen_btn_slugs = set()
         button_movies = []
-        for m in (full_now_playing[:10] + full_coming_soon[:5]):
+        for m in (full_now_playing[:8] + full_events[:4] + full_coming_soon[:4]):
             if m['slug'] not in seen_btn_slugs:
                 button_movies.append(m)
                 seen_btn_slugs.add(m['slug'])
@@ -673,6 +693,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("list", list_tracked))
     app.add_handler(CommandHandler("remove", remove_movie))
     app.add_handler(CommandHandler("refresh", refresh_cookies))
+    app.add_handler(CommandHandler("refreshlist", refresh_movie_list_cmd))
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))

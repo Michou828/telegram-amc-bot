@@ -167,16 +167,68 @@ async def remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def refresh_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
-    status_msg = await update.message.reply_text(
-        "🔄 Refreshing cookies with stealth browser...\n"
-        "Attempt 1/2 — this may take up to 60s per attempt."
+
+    COOKIE_HEALTHY_WINDOW = 1800  # 30 minutes
+    harvest_age = time.time() - scraper.last_cookie_harvest if scraper.last_cookie_harvest else None
+    fetch_age = time.time() - scraper.last_successful_fetch if scraper.last_successful_fetch else None
+
+    cookies_healthy = (
+        harvest_age is not None and harvest_age < COOKIE_HEALTHY_WINDOW and
+        fetch_age is not None and fetch_age < COOKIE_HEALTHY_WINDOW
     )
-    success = await asyncio.to_thread(scraper.harvest_cookies)
+
+    if cookies_healthy:
+        harvest_str = _age_str(scraper.last_cookie_harvest)
+        fetch_str = _age_str(scraper.last_successful_fetch)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Yes, force refresh", callback_data="confirm_refresh"),
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_refresh")
+        ]])
+        await update.message.reply_text(
+            f"⚠️ *Cookies look healthy*\n"
+            f"  Harvested: {harvest_str}\n"
+            f"  Last successful fetch: {fetch_str}\n\n"
+            f"Harvest a new cookie anyway?",
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    else:
+        await _do_refresh(update.message)
+
+async def _do_refresh(msg_or_query):
+    """Run the actual harvest and edit the status message with the result."""
+    is_query = hasattr(msg_or_query, 'edit_message_text')
+    if is_query:
+        await msg_or_query.edit_message_text(
+            "🔄 Refreshing cookies with stealth browser...\n"
+            "Attempt 1/2 — this may take up to 60s per attempt."
+        )
+        send = msg_or_query.edit_message_text
+    else:
+        status_msg = await msg_or_query.reply_text(
+            "🔄 Refreshing cookies with stealth browser...\n"
+            "Attempt 1/2 — this may take up to 60s per attempt."
+        )
+        send = status_msg.edit_text
+
+    success = await asyncio.to_thread(scraper.harvest_cookies, force=True)
     if success:
-        await status_msg.edit_text("✅ Cookies refreshed successfully!")
+        await send("✅ Cookies refreshed successfully!")
     else:
         reason = scraper.last_fail_reason or "Unknown error"
-        await status_msg.edit_text(f"❌ Cookie refresh failed after 2 attempts.\n\n{reason}")
+        await send(f"❌ Cookie refresh failed after 2 attempts.\n\n{reason}")
+
+async def confirm_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+    await _do_refresh(query)
+
+async def cancel_refresh_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+    await query.edit_message_text("Cancelled.")
 
 # --- TRACK / CHECK FLOW ---
 
@@ -620,6 +672,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("list", list_tracked))
     app.add_handler(CommandHandler("remove", remove_movie))
     app.add_handler(CommandHandler("refresh", refresh_cookies))
+    app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
+    app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))
     app.add_handler(conv_handler)
     app.job_queue.run_repeating(polling_task, interval=600, first=10)

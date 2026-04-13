@@ -90,7 +90,7 @@ class AMCScraper:
         cookie_names = ", ".join(sorted(self.cookies.keys()))
         print(f"Stored {len(self.cookies)} cookies: {cookie_names}")
 
-    def harvest_cookies(self, target_url=None):
+    def harvest_cookies(self, target_url=None, force=False):
         if target_url is None:
             target_url = self._default_harvest_url()
 
@@ -99,9 +99,10 @@ class AMCScraper:
             print("Harvest lock timed out — skipping.")
             return False
         try:
-            # If another caller ran Chrome while we waited for the lock, reuse those cookies
-            if self._session_harvest_at and time.time() - self._session_harvest_at < 300:
-                print("[Harvest] Cookies just harvested by another caller this session — reusing.")
+            # If another caller ran Chrome within the last 2 min, reuse those cookies.
+            # force=True bypasses this — used by /refresh so it always runs Chrome.
+            if not force and self._session_harvest_at and time.time() - self._session_harvest_at < 120:
+                print("[Harvest] Cookies recently harvested — reusing.")
                 return True
             return self._do_harvest(target_url)
         finally:
@@ -230,19 +231,12 @@ class AMCScraper:
                 self.save_cache()
                 return None
 
-            print(f"Blocked (status={response.status_code}), attempting cookie harvest from target URL...")
-            if self.harvest_cookies(target_url=url):  # harvest from the exact URL — Queue-IT tokens may be URL/date-specific
-                time.sleep(3)  # brief pause — Cloudflare needs a moment after challenge is solved
-                response = self.session.get(url, headers=headers, timeout=30)
-                if response.status_code == 200 and "cookietest=1" not in response.text:
-                    self.last_successful_fetch = time.time()
-                    return response.text
-                reason = f"Blocked (status={response.status_code}), harvest succeeded but re-fetch still blocked"
-                print(reason)
-                self.last_failed_fetch = time.time()
-                self.last_fail_reason = reason
-                # 2-min rate-limit guard only — cookies ARE valid, next poll should work
-                self._harvest_cooldown_until = time.time() + 120
+            print(f"Blocked (status={response.status_code}), harvesting cookies from showtime URL...")
+            if self.harvest_cookies():  # always harvest from showtime URL — required for QueueITAccepted cookie
+                # Don't re-fetch immediately — cookies need a moment to be recognized.
+                # The next call to get_page_data will succeed with the fresh cookies.
+                print("Harvest succeeded — fresh cookies ready for next request.")
+                self.last_fail_reason = "Harvest succeeded — next request should work."
                 self.save_cache()
                 return None
             # harvest_cookies already set last_fail_reason on failure

@@ -79,7 +79,8 @@ class AMCScraper:
             self.session.cookies.set(name, value, domain=".amctheatres.com")
         self.last_cookie_harvest = time.time()
         self.save_cache()
-        print(f"Stored {len(self.cookies)} cookies.")
+        cookie_names = ", ".join(sorted(self.cookies.keys()))
+        print(f"Stored {len(self.cookies)} cookies: {cookie_names}")
 
     def harvest_cookies(self, target_url=None):
         if target_url is None:
@@ -225,6 +226,8 @@ class AMCScraper:
                 print(reason)
                 self.last_failed_fetch = time.time()
                 self.last_fail_reason = reason
+                # Short cooldown — cookies just harvested, no point hammering Chrome again immediately
+                self._harvest_cooldown_until = time.time() + 600  # 10 min
                 self.save_cache()
                 return None
             # harvest_cookies already set last_fail_reason on failure

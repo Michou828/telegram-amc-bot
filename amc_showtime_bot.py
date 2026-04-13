@@ -73,24 +73,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
+def _age_str(ts):
+    """Convert a unix timestamp to a human-readable age string."""
+    if not ts:
+        return "Never"
+    mins = int((time.time() - ts) / 60)
+    if mins < 1:
+        return "just now"
+    if mins < 60:
+        return f"{mins}m ago"
+    return f"{mins // 60}h {mins % 60}m ago"
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     tracked = get_tracked_movies()
 
-    cookie_age = "Never harvested"
-    if scraper.last_cookie_harvest > 0:
-        age_mins = int((time.time() - scraper.last_cookie_harvest) / 60)
-        if age_mins < 60:
-            cookie_age = f"{age_mins}m ago"
-        else:
-            cookie_age = f"{age_mins // 60}h {age_mins % 60}m ago"
+    # Harvest cooldown
+    cooldown_str = "None"
+    if time.time() < scraper._harvest_cooldown_until:
+        remaining = int((scraper._harvest_cooldown_until - time.time()) / 60)
+        cooldown_str = f"Active — {remaining}m remaining"
 
-    await update.message.reply_text(
-        f"Bot status: RUNNING\n"
-        f"Tracking {len(tracked)} task(s).\n"
-        f"Last poll: {context.bot_data.get('last_check', 'Never')}\n"
-        f"Cookies last harvested: {cookie_age}"
+    # Movie list cache validity
+    list_age = _age_str(scraper.last_list_refresh)
+    list_valid_for = max(0, int((43200 - (time.time() - scraper.last_list_refresh)) / 60)) if scraper.last_list_refresh else 0
+
+    # Polling health
+    failures = context.bot_data.get('consecutive_poll_failures', 0)
+    poll_status = "OK" if failures == 0 else f"⚠️ {failures} consecutive failure(s)"
+
+    # Last fail reason (truncate if long)
+    fail_reason = scraper.last_fail_reason or "None"
+    if len(fail_reason) > 80:
+        fail_reason = fail_reason[:77] + "..."
+
+    msg = (
+        f"*Bot Status: RUNNING*\n"
+        f"Tracking: {len(tracked)} task(s)\n\n"
+        f"🍪 *Cookies*\n"
+        f"  Harvested: {_age_str(scraper.last_cookie_harvest)}\n"
+        f"  Stored: {len(scraper.cookies)} cookies\n"
+        f"  Last successful fetch: {_age_str(scraper.last_successful_fetch)}\n"
+        f"  Last failed fetch: {_age_str(scraper.last_failed_fetch)}\n"
+        f"  Last fail reason: {fail_reason}\n"
+        f"  Harvest cooldown: {cooldown_str}\n\n"
+        f"🎬 *Movie list*\n"
+        f"  Last updated: {list_age}"
+        + (f" (valid {list_valid_for}m more)" if scraper.last_list_refresh else "") + "\n\n"
+        f"📡 *Polling*\n"
+        f"  Last poll: {context.bot_data.get('last_check', 'Never')}\n"
+        f"  Consecutive failures: {failures}\n"
+        f"  Status: {poll_status}"
     )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def list_tracked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -133,13 +168,15 @@ async def remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refresh_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     status_msg = await update.message.reply_text(
-        "🔄 Refreshing cookies with stealth browser...\nThis may take 15-20 seconds."
+        "🔄 Refreshing cookies with stealth browser...\n"
+        "Attempt 1/2 — this may take up to 60s per attempt."
     )
     success = await asyncio.to_thread(scraper.harvest_cookies)
     if success:
         await status_msg.edit_text("✅ Cookies refreshed successfully!")
     else:
-        await status_msg.edit_text("❌ Cookie refresh failed. Check logs for details.")
+        reason = scraper.last_fail_reason or "Unknown error"
+        await status_msg.edit_text(f"❌ Cookie refresh failed after 2 attempts.\n\n{reason}")
 
 # --- TRACK / CHECK FLOW ---
 
@@ -470,6 +507,9 @@ def get_dates_from_range(text):
         logger.error(f"Error parsing date range '{text}': {e}")
     return dates
 
+POLL_FAILURE_ALERT_THRESHOLD = 3    # alert after this many consecutive failures
+POLL_FAILURE_ALERT_COOLDOWN = 1800  # seconds between repeated alerts
+
 async def polling_task(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Starting background polling cycle...")
     tracked = get_tracked_movies()
@@ -483,7 +523,27 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
         for date in dates:
             url = f"https://www.amctheatres.com/movie-theatres/{market}/{theater_slug}/showtimes?date={date}"
             html = await asyncio.to_thread(scraper.get_page_data, url)
-            if not html: continue
+            if not html:
+                failures = context.bot_data.get('consecutive_poll_failures', 0) + 1
+                context.bot_data['consecutive_poll_failures'] = failures
+                logger.warning(f"Fetch failed for {movie_name} @ {theater_slug} ({date}). Consecutive failures: {failures}")
+                # Alert owner if failures hit threshold and cooldown has passed
+                last_alert = context.bot_data.get('last_poll_alert', 0)
+                if failures >= POLL_FAILURE_ALERT_THRESHOLD and (time.time() - last_alert) > POLL_FAILURE_ALERT_COOLDOWN:
+                    reason = scraper.last_fail_reason or "Unknown error"
+                    alert_msg = (
+                        f"⚠️ *Polling Warning*\n"
+                        f"{failures} consecutive fetch failure(s).\n\n"
+                        f"Last error: {reason}\n\n"
+                        f"Check /status for details."
+                    )
+                    try:
+                        await context.bot.send_message(chat_id=OWNER_ID, text=alert_msg, parse_mode="Markdown")
+                        context.bot_data['last_poll_alert'] = time.time()
+                    except Exception as e:
+                        logger.error(f"Failed to send poll alert: {e}")
+                continue
+            context.bot_data['consecutive_poll_failures'] = 0  # reset on success
 
             all_data = scraper.parse_showtimes(html)
             new_showtimes_found = {}

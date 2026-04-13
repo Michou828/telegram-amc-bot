@@ -24,6 +24,9 @@ class AMCScraper:
         self.movie_list_cache = {"now-playing": [], "coming-soon": []}
         self.last_list_refresh = 0
         self.last_cookie_harvest = 0
+        self.last_successful_fetch = 0   # last time get_page_data returned HTML
+        self.last_failed_fetch = 0       # last time get_page_data returned None
+        self.last_fail_reason = ""       # human-readable reason for last failure
         self._harvest_cooldown_until = 0  # runtime only, not persisted
         self._harvest_lock = threading.Lock()  # prevents concurrent Chrome launches
         self.load_cache()
@@ -37,6 +40,9 @@ class AMCScraper:
                     self.movie_list_cache = data.get("movie_list", {"now-playing": [], "coming-soon": []})
                     self.last_list_refresh = data.get("last_list_refresh", 0)
                     self.last_cookie_harvest = data.get("last_cookie_harvest", 0)
+                    self.last_successful_fetch = data.get("last_successful_fetch", 0)
+                    self.last_failed_fetch = data.get("last_failed_fetch", 0)
+                    self.last_fail_reason = data.get("last_fail_reason", "")
                     for name, value in self.cookies.items():
                         self.session.cookies.set(name, value, domain=".amctheatres.com")
             except Exception as e:
@@ -49,6 +55,9 @@ class AMCScraper:
                 "movie_list": self.movie_list_cache,
                 "last_list_refresh": self.last_list_refresh,
                 "last_cookie_harvest": self.last_cookie_harvest,
+                "last_successful_fetch": self.last_successful_fetch,
+                "last_failed_fetch": self.last_failed_fetch,
+                "last_fail_reason": self.last_fail_reason,
             }
             with open(CACHE_FILE, 'w') as f:
                 json.dump(data, f)
@@ -82,23 +91,46 @@ class AMCScraper:
             self._harvest_lock.release()
 
     def _do_harvest(self, target_url):
-        # Try UC mode first — best stealth, works on Mac/x86
-        if SELENIUM_AVAILABLE:
-            print("Trying UC mode cookie harvest...")
-            try:
-                with SB(uc=True, headless=True) as sb:
-                    sb.uc_open_with_reconnect(target_url, 4)
-                    time.sleep(15)
-                    sb_cookies = sb.get_cookies()
-                    self._store_cookies(sb_cookies)
-                    return True
-            except Exception as e:
-                print(f"UC mode failed: {e} — trying system Chrome fallback...")
+        last_err = "Unknown error"
+        for attempt in range(1, 3):
+            print(f"[Harvest] Attempt {attempt}/2...")
 
-        # Fallback: raw selenium with system chromedriver (ARM-compatible, Pi)
-        return self._harvest_with_system_chrome(target_url)
+            # UC mode only on attempt 1 — best stealth, works on Mac/x86
+            if SELENIUM_AVAILABLE and attempt == 1:
+                print("[Harvest] Trying UC mode...")
+                try:
+                    with SB(uc=True, headless=True) as sb:
+                        sb.uc_open_with_reconnect(target_url, 4)
+                        time.sleep(15)
+                        sb_cookies = sb.get_cookies()
+                        self._store_cookies(sb_cookies)
+                        print("[Harvest] UC mode succeeded.")
+                        return True
+                except Exception as e:
+                    last_err = f"UC mode: {e}"
+                    print(f"[Harvest] UC mode failed: {e} — trying system Chrome...")
 
-    def _harvest_with_system_chrome(self, target_url):
+            # System Chrome fallback — longer wait on attempt 2
+            wait_secs = 45 if attempt == 1 else 60
+            ok, err = self._harvest_with_system_chrome(target_url, wait_secs=wait_secs)
+            if ok:
+                return True
+            last_err = err
+            print(f"[Harvest] Attempt {attempt}/2 failed: {err}")
+            if attempt == 1:
+                print("[Harvest] Waiting 10s before retry...")
+                time.sleep(10)
+
+        reason = f"Harvest failed after 2 attempts. Last error: {last_err}"
+        print(f"[Harvest] {reason}")
+        self.last_fail_reason = reason
+        self.last_failed_fetch = time.time()
+        self._harvest_cooldown_until = time.time() + HARVEST_COOLDOWN
+        print(f"[Harvest] Cooldown set for {HARVEST_COOLDOWN // 60} minutes.")
+        self.save_cache()
+        return False
+
+    def _harvest_with_system_chrome(self, target_url, wait_secs=45):
         try:
             from selenium import webdriver
             from selenium.webdriver.chrome.service import Service as ChromeService
@@ -111,7 +143,7 @@ class AMCScraper:
             system_chromedriver = next((p for p in ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver"] if os.path.exists(p)), None)
             chromedriver_bin = system_chromedriver or shutil.which("chromedriver")
 
-            print(f"Starting headless Chrome ({chromium_bin}) with driver ({chromedriver_bin})...")
+            print(f"[Harvest] Starting headless Chrome ({chromium_bin}), driver ({chromedriver_bin}), wait={wait_secs}s...")
             options = Options()
             options.add_argument("--headless")
             options.add_argument("--no-sandbox")
@@ -124,7 +156,7 @@ class AMCScraper:
 
             driver = webdriver.Chrome(service=ChromeService(chromedriver_bin), options=options)
             driver.get(target_url)
-            time.sleep(45)  # wait for Cloudflare + queue-it JS to complete
+            time.sleep(wait_secs)  # wait for Cloudflare + queue-it JS to complete
             selenium_cookies = driver.get_cookies()
             driver.quit()
 
@@ -132,13 +164,10 @@ class AMCScraper:
                 raise Exception("Browser returned no cookies")
 
             self._store_cookies(selenium_cookies)
-            return True
+            return True, ""
 
         except Exception as e:
-            print(f"System Chrome harvest failed: {e}")
-            self._harvest_cooldown_until = time.time() + HARVEST_COOLDOWN
-            print(f"Harvest cooldown set for {HARVEST_COOLDOWN // 60} minutes.")
-            return False
+            return False, f"System Chrome: {e}"
 
     def get_page_data(self, url):
         headers = {
@@ -150,21 +179,39 @@ class AMCScraper:
         try:
             response = self.session.get(url, headers=headers, timeout=30)
             if response.status_code == 200 and "cookietest=1" not in response.text:
+                self.last_successful_fetch = time.time()
                 return response.text
 
             # Blocked — check cooldown before attempting harvest
             if time.time() < self._harvest_cooldown_until:
                 remaining = int((self._harvest_cooldown_until - time.time()) / 60)
-                print(f"Blocked but harvest cooldown active ({remaining}m remaining). Skipping.")
+                reason = f"Blocked (status={response.status_code}), harvest cooldown active ({remaining}m remaining)"
+                print(reason)
+                self.last_failed_fetch = time.time()
+                self.last_fail_reason = reason
+                self.save_cache()
                 return None
 
             print(f"Blocked (status={response.status_code}), attempting cookie harvest...")
             if self.harvest_cookies():
                 response = self.session.get(url, headers=headers, timeout=30)
-                return response.text if response.status_code == 200 else None
+                if response.status_code == 200 and "cookietest=1" not in response.text:
+                    self.last_successful_fetch = time.time()
+                    return response.text
+                reason = f"Blocked (status={response.status_code}), harvest succeeded but re-fetch still blocked"
+                print(reason)
+                self.last_failed_fetch = time.time()
+                self.last_fail_reason = reason
+                self.save_cache()
+                return None
+            # harvest_cookies already set last_fail_reason on failure
 
         except Exception as e:
-            print(f"Request error: {e}")
+            reason = f"Request exception: {e}"
+            print(reason)
+            self.last_failed_fetch = time.time()
+            self.last_fail_reason = reason
+            self.save_cache()
         return None
 
     def parse_showtimes(self, html):

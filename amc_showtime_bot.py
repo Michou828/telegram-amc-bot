@@ -353,8 +353,9 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
 
-        # Recent movies section
-        recents = get_recent_movies(limit=4)
+        # Recent movies section — only show movies still on AMC
+        current_slugs = {m['slug'] for m in all_movies}
+        recents = [r for r in get_recent_movies(limit=8) if r[0] in current_slugs][:4]
         if recents:
             keyboard.append([InlineKeyboardButton("🕐 Recently Used:", callback_data="noop")])
             for i in range(0, len(recents), 2):

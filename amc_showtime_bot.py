@@ -286,20 +286,28 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
     advanced = [(slug, name, first, last) for slug, name, status, first, last in movies if status == "advanced_tickets"]
     future = [(slug, name, first, last) for slug, name, status, first, last in movies if status == "future_release"]
 
-    msg = "*Upcoming Movie Registry*\n"
+    # Build lines, then send in chunks to stay under Telegram's 4096 char limit
+    lines = [f"*Upcoming Movie Registry* ({len(movies)} total)\n"]
     if advanced:
-        msg += f"\n🎟 *Advanced Tickets Available* ({len(advanced)})\n"
+        lines.append(f"\n🎟 *Advanced Tickets Available* ({len(advanced)})")
         for slug, name, first_seen, _ in advanced:
-            first_date = first_seen[:10]
-            msg += f"  • {name} _(tracked since {first_date})_\n"
+            lines.append(f"  • {name} _(since {first_seen[:10]})_")
     if future:
-        msg += f"\n🔮 *Future Releases* ({len(future)})\n"
+        lines.append(f"\n🔮 *Future Releases* ({len(future)})")
         for slug, name, first_seen, _ in future:
-            first_date = first_seen[:10]
-            msg += f"  • {name} _(tracked since {first_date})_\n"
+            lines.append(f"  • {name} _(since {first_seen[:10]})_")
+    lines.append(f"\n_Use /refreshmovielist to sync._")
 
-    msg += f"\n_Use /refreshmovielist to sync with AMC's current lists._"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    chunk = ""
+    for line in lines:
+        candidate = chunk + line + "\n"
+        if len(candidate) > 3800:
+            await update.message.reply_text(chunk, parse_mode="Markdown")
+            chunk = line + "\n"
+        else:
+            chunk = candidate
+    if chunk:
+        await update.message.reply_text(chunk, parse_mode="Markdown")
 
 # --- TRACK / CHECK FLOW ---
 

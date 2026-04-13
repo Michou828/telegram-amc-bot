@@ -300,7 +300,14 @@ class AMCScraper:
 
         url = f"https://www.amctheatres.com/movies?movie-list={list_type}"
         html = self.get_page_data(url)
-        if not html: return self.movie_list_cache.get(list_type, [])
+        if not html:
+            # Movies URL sometimes needs an extra moment after harvest — retry once
+            print(f"[MovieList] {list_type}: first fetch blocked, retrying in 5s...")
+            time.sleep(5)
+            html = self.get_page_data(url)
+        if not html:
+            print(f"[MovieList] {list_type}: both fetches blocked, using cache ({len(self.movie_list_cache.get(list_type, []))} entries)")
+            return self.movie_list_cache.get(list_type, [])
 
         movies = []
         matches = re.findall(r'/movies/([a-z0-9-]+-(\d+))', html)

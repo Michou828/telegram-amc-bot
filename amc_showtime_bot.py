@@ -61,13 +61,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Welcome to AMC Showtime Monitor Bot!\n\n"
         "Commands:\n"
-        "/check - Quick check for showtimes\n"
-        "/track - Start tracking a movie\n"
-        "/list - Show tracked movies\n"
+        "/checkshowtime - Quick check for showtimes\n"
+        "/trackmovie - Start tracking a movie\n"
+        "/trackinglist - Show tracked movies\n"
         "/remove - Stop tracking a movie\n"
-        "/status - Bot status\n"
-        "/refresh - Force cookie refresh\n"
-        "/refreshlist - Refresh movie lists (Now Playing, Events, Coming Soon)\n"
+        "/botstatus - Bot status\n"
+        "/refreshcookies - Force cookie refresh\n"
+        "/refreshmovielist - Refresh movie lists (Now Playing, Events, Coming Soon)\n"
         "/movies - Show upcoming movie registry\n"
         "/cancel - Cancel current action\n"
         "/help - Show this message"
@@ -309,7 +309,8 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return ConversationHandler.END
 
-    context.user_data['action'] = update.message.text.split()[0][1:]  # 'track' or 'check'
+    cmd = update.message.text.split()[0][1:]  # e.g. 'trackmovie' or 'checkshowtime'
+    context.user_data['action'] = 'track' if cmd == 'trackmovie' else 'check'
 
     status_msg = await update.message.reply_text(
         "🤖 Fetching movie lists from AMC...\n"
@@ -705,6 +706,14 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
 
     context.bot_data['last_check'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    """Log errors but suppress noisy transient network errors."""
+    err = context.error
+    if isinstance(err, Exception) and "NetworkError" in type(err).__name__:
+        logger.warning(f"Transient network error (auto-retry): {err}")
+    else:
+        logger.error(f"Unhandled error: {err}", exc_info=err)
+
 async def post_init(application):
     if OWNER_ID:
         try:
@@ -718,8 +727,8 @@ if __name__ == "__main__":
 
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("track", initiate_flow),
-            CommandHandler("check", initiate_flow)
+            CommandHandler("trackmovie", initiate_flow),
+            CommandHandler("checkshowtime", initiate_flow)
         ],
         states={
             SELECT_MOVIE: [
@@ -747,16 +756,17 @@ if __name__ == "__main__":
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("list", list_tracked))
+    app.add_handler(CommandHandler("botstatus", status))
+    app.add_handler(CommandHandler("trackinglist", list_tracked))
     app.add_handler(CommandHandler("remove", remove_movie))
-    app.add_handler(CommandHandler("refresh", refresh_cookies))
-    app.add_handler(CommandHandler("refreshlist", refresh_movie_list_cmd))
+    app.add_handler(CommandHandler("refreshcookies", refresh_cookies))
+    app.add_handler(CommandHandler("refreshmovielist", refresh_movie_list_cmd))
     app.add_handler(CommandHandler("movies", show_movie_registry))
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))
     app.add_handler(conv_handler)
+    app.add_error_handler(error_handler)
     app.job_queue.run_repeating(polling_task, interval=600, first=10)
 
     print("\n" + "="*30 + "\n🤖 AMC Showtime Monitor running!\n💬 Message your bot in Telegram\n🛑 Ctrl+C to stop\n" + "="*30 + "\n")

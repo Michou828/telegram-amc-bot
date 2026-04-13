@@ -138,7 +138,6 @@ class AMCScraper:
                 time.sleep(10)
 
         reason = f"Harvest failed after 2 attempts. Last error: {last_err}"
-        print(f"[Harvest] {reason}")
         self.last_fail_reason = reason
         self.last_failed_fetch = time.time()
         self._harvest_cooldown_until = time.time() + HARVEST_COOLDOWN
@@ -225,8 +224,9 @@ class AMCScraper:
                 self.save_cache()
                 return None
 
-            print(f"Blocked (status={response.status_code}), attempting cookie harvest...")
-            if self.harvest_cookies():
+            print(f"Blocked (status={response.status_code}), attempting cookie harvest from target URL...")
+            if self.harvest_cookies(target_url=url):  # harvest from the exact URL — Queue-IT tokens may be URL/date-specific
+                time.sleep(3)  # brief pause — Cloudflare needs a moment after challenge is solved
                 response = self.session.get(url, headers=headers, timeout=30)
                 if response.status_code == 200 and "cookietest=1" not in response.text:
                     self.last_successful_fetch = time.time()
@@ -235,8 +235,8 @@ class AMCScraper:
                 print(reason)
                 self.last_failed_fetch = time.time()
                 self.last_fail_reason = reason
-                # Short cooldown — cookies just harvested, no point hammering Chrome again immediately
-                self._harvest_cooldown_until = time.time() + 600  # 10 min
+                # 2-min rate-limit guard only — cookies ARE valid, next poll should work
+                self._harvest_cooldown_until = time.time() + 120
                 self.save_cache()
                 return None
             # harvest_cookies already set last_fail_reason on failure

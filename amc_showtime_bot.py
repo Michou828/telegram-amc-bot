@@ -641,7 +641,10 @@ async def theater_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['theater_market'] = theater_market
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")]])
     msg = (f"🎬 *{context.user_data['movie_name']}*\n📍 {theater_name}\n\n"
-           f"📅 Enter date (e.g. 4/11) or range (e.g. 4/11-4/15):")
+           f"📅 Enter date(s):\n"
+           f"  Single: `7/17`\n"
+           f"  Range: `7/17-7/20`\n"
+           f"  Mixed: `7/17, 7/20-7/22, 7/25`")
     if query:
         await query.edit_message_text(msg, reply_markup=cancel_kb, parse_mode="Markdown")
     else:
@@ -654,7 +657,11 @@ async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dates = get_dates_from_range(text)
     if not dates:
         await update.message.reply_text(
-            "❌ Invalid date format. Use M/D (e.g., 4/11) or M/D-M/D (e.g., 4/11-4/13)."
+            "❌ Invalid date format.\n\n"
+            "Examples:\n"
+            "  7/17\n"
+            "  7/17-7/20\n"
+            "  7/17, 7/20-7/22, 7/25"
         )
         return SELECT_DATE
     now = datetime.date.today()
@@ -793,22 +800,35 @@ def parse_date_input(text):
     return text
 
 def get_dates_from_range(text):
+    """Parse a date string into a list of YYYY-MM-DD dates.
+    Supports: single date, range (M/D-M/D), or comma-separated mix (M/D, M/D-M/D, ...)
+    """
     dates = []
-    try:
-        if "-" in text:
-            start_str, end_str = text.split("-", 1)
-            start_parsed = parse_date_input(start_str.strip())
-            end_parsed = parse_date_input(end_str.strip())
-            start_dt = datetime.datetime.strptime(start_parsed, "%Y-%m-%d").date()
-            end_dt = datetime.datetime.strptime(end_parsed, "%Y-%m-%d").date()
-            curr = start_dt
-            while curr <= end_dt:
-                dates.append(curr.strftime("%Y-%m-%d"))
-                curr += datetime.timedelta(days=1)
-        else:
-            dates.append(parse_date_input(text.strip()))
-    except Exception as e:
-        logger.error(f"Error parsing date range '{text}': {e}")
+    seen = set()
+    for segment in [s.strip() for s in text.split(',')]:
+        if not segment:
+            continue
+        try:
+            if '-' in segment:
+                start_str, end_str = segment.split('-', 1)
+                start_dt = datetime.datetime.strptime(
+                    parse_date_input(start_str.strip()), "%Y-%m-%d").date()
+                end_dt = datetime.datetime.strptime(
+                    parse_date_input(end_str.strip()), "%Y-%m-%d").date()
+                curr = start_dt
+                while curr <= end_dt:
+                    d = curr.strftime("%Y-%m-%d")
+                    if d not in seen:
+                        dates.append(d)
+                        seen.add(d)
+                    curr += datetime.timedelta(days=1)
+            else:
+                d = parse_date_input(segment)
+                if d not in seen:
+                    dates.append(d)
+                    seen.add(d)
+        except Exception as e:
+            logger.error(f"Error parsing date segment '{segment}': {e}")
     return dates
 
 POLL_FAILURE_ALERT_THRESHOLD = 3    # alert after this many consecutive failures

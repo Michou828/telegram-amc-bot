@@ -295,7 +295,8 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines = [header]
         for m in lst[:cap]:
             date_str = (f" — {date_fmt}{m['release_date']}" if m.get("release_date") else "")
-            lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+            url = m.get("url") or f"https://www.amctheatres.com/movies/{m['slug']}"
+            lines.append(f"  • [{m['name']}]({url}){date_str}")
         if len(lst) > cap:
             lines.append(f"  _...+{len(lst) - cap} more — search by name in /checkshowtime_")
         return lines

@@ -381,6 +381,10 @@ class AMCScraper:
     def refresh_movie_list(self):
         """Force-fetch all three movie lists, bypassing the 12h cache. Returns counts dict."""
         self.last_list_refresh = 0
+        # Clear per-list caches too — otherwise the first successful fetch resets
+        # last_list_refresh and subsequent lists see a fresh timestamp + stale data.
+        for lt in ("now-playing", "coming-soon", "events"):
+            self.movie_list_cache[lt] = []
         counts = {}
         for list_type in ("now-playing", "coming-soon", "events"):
             movies = self.get_movies_list(list_type)

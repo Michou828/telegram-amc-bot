@@ -287,32 +287,34 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    def _sorted(lst):
+        return sorted(lst, key=lambda m: m.get("release_date") or "9999")
+
+    def _section(lst, header, cap, date_fmt):
+        lst = _sorted(lst)
+        lines = [header]
+        for m in lst[:cap]:
+            date_str = (f" — {date_fmt}{m['release_date']}" if m.get("release_date") else "")
+            lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+        if len(lst) > cap:
+            lines.append(f"  _...+{len(lst) - cap} more — search by name in /checkshowtime_")
+        return lines
+
     lines = [f"*AMC Movies*\n"]
 
     if now_playing:
-        lines.append(f"🎬 *Now Playing* ({len(now_playing)})")
-        for m in now_playing:
-            lines.append(f"  • [{m['name']}]({m['url']})")
+        lines += _section(now_playing, f"🎬 *Now Playing* ({len(now_playing)})", 20, "")
 
     if coming_soon:
         adv = [m for m in coming_soon if m.get("has_advanced_tickets")]
         future = [m for m in coming_soon if not m.get("has_advanced_tickets")]
         if adv:
-            lines.append(f"\n🎟 *Advance Tickets On Sale* ({len(adv)})")
-            for m in adv:
-                date_str = f" — opens {m['release_date']}" if m.get("release_date") else ""
-                lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+            lines += _section(adv, f"\n🎟 *Advance Tickets On Sale* ({len(adv)})", 30, "opens ")
         if future:
-            lines.append(f"\n🔮 *Coming Soon* ({len(future)})")
-            for m in future:
-                date_str = f" — {m['release_date']}" if m.get("release_date") else " — TBD"
-                lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+            lines += _section(future, f"\n🔮 *Coming Soon* ({len(future)})", 20, "")
 
     if events:
-        lines.append(f"\n🎭 *Events* ({len(events)})")
-        for m in events:
-            date_str = f" — {m['release_date']}" if m.get("release_date") else ""
-            lines.append(f"  • [{m['name']}]({m['url']}){date_str}")
+        lines += _section(events, f"\n🎭 *Events* ({len(events)})", 20, "")
 
     age = _age_str(scraper.last_list_refresh) if scraper.last_list_refresh else "never"
     lines.append(f"\n_Last updated: {age} — /refreshmovielist to sync_")
@@ -778,12 +780,31 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.error(f"Unhandled error: {err}", exc_info=err)
 
+async def _startup_harvest(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("[Startup] Cookies stale — harvesting in background...")
+    success = await asyncio.to_thread(scraper.harvest_cookies)
+    if success:
+        logger.info("[Startup] Cookie harvest succeeded.")
+    else:
+        reason = scraper.last_fail_reason or "Unknown error"
+        logger.warning(f"[Startup] Cookie harvest failed: {reason}")
+        try:
+            await context.bot.send_message(
+                chat_id=OWNER_ID,
+                text=f"⚠️ Startup cookie harvest failed.\n\n{reason}\n\nTry /refreshcookies manually."
+            )
+        except Exception:
+            pass
+
 async def post_init(application):
     if OWNER_ID:
         try:
             await application.bot.send_message(chat_id=OWNER_ID, text="🤖 Bot Started!\n\nSend /start")
         except Exception as e:
             logger.error(f"Failed to send startup message: {e}")
+    # Harvest cookies in background if stale (older than 6h or never harvested)
+    if time.time() - scraper.last_cookie_harvest > 21600:
+        application.job_queue.run_once(_startup_harvest, when=15)
 
 if __name__ == "__main__":
     init_db()

@@ -847,12 +847,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("refreshcookies", refresh_cookies))
     app.add_handler(CommandHandler("refreshmovielist", refresh_movie_list_cmd))
     app.add_handler(CommandHandler("movies", show_movie_registry))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
     app.add_handler(conv_handler)
+    # Must be last — catches any /command not matched above
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     app.add_error_handler(error_handler)
     app.job_queue.run_repeating(polling_task, interval=600, first=10)
 

@@ -149,19 +149,57 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+def _build_tracking_groups(tracked):
+    """Group tracked rows by (movie_slug, theater_slug). Returns ordered list of group dicts."""
+    groups = {}
+    order = []
+    for row in tracked:
+        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, formats, _ = row
+        key = (movie_slug, theater_slug)
+        if key not in groups:
+            groups[key] = {'name': movie_name, 'slug': movie_slug,
+                           'theater': theater_name, 'formats': {}, 'entries': []}
+            order.append(key)
+        groups[key]['entries'].append((track_id, formats, date_range))
+        for fmt in [f.strip() for f in formats.split(',')]:
+            groups[key]['formats'].setdefault(fmt, []).append(date_range)
+    return [groups[k] for k in order]
+
+def _remove_keyboard(entries, selected):
+    """Build the toggle keyboard for step-2 removal."""
+    keyboard = []
+    for track_id, formats, date_range in entries:
+        check = "✅" if track_id in selected else "☐"
+        keyboard.append([InlineKeyboardButton(
+            f"{check} {formats} — {date_range}",
+            callback_data=f"rmtoggle_{track_id}"
+        )])
+    n = len(selected)
+    row = []
+    if n:
+        row.append(InlineKeyboardButton(f"🗑 Remove Selected ({n})", callback_data="rmconfirm"))
+    row.append(InlineKeyboardButton("❌ Cancel", callback_data="rmcancel"))
+    keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
+
 async def list_tracked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     tracked = get_tracked_movies()
     if not tracked:
-        await update.message.reply_text("You are not tracking any movies.")
+        await update.message.reply_text("You are not tracking any movies.\n\nUse /track to start.")
         return
 
-    msg = "Current tracking tasks:\n"
-    for row in tracked:
-        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, formats, created_at = row
-        msg += f"\n*#{track_id}* {movie_name}\n📍 {theater_name}\n📅 {date_range}  🎬 {formats}\n"
-
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    groups = _build_tracking_groups(tracked)
+    lines = [f"*Tracking {len(groups)} movie(s):*\n"]
+    for i, g in enumerate(groups, 1):
+        mid = re.search(r'-(\d+)$', g['slug'])
+        id_str = f" #{mid.group(1)}" if mid else ""
+        lines.append(f"*#{i} {g['name']}{id_str}*")
+        lines.append(f"📍 {g['theater']}")
+        for fmt, dates in g['formats'].items():
+            lines.append(f"  _{fmt}_: {', '.join(dates)}")
+        lines.append("")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def remove_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -170,22 +208,89 @@ async def remove_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nothing to remove.")
         return
 
+    groups = _build_tracking_groups(tracked)
+    context.bot_data['rm_groups'] = groups  # store for step-2
+
     keyboard = []
-    for row in tracked:
-        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, formats, created_at = row
-        btn_text = f"{movie_name} @ {theater_name} ({date_range})"
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"remove_{track_id}")])
+    for i, g in enumerate(groups):
+        mid = re.search(r'-(\d+)$', g['slug'])
+        id_str = f" #{mid.group(1)}" if mid else ""
+        keyboard.append([InlineKeyboardButton(
+            f"#{i+1} {g['name']}{id_str}", callback_data=f"rmpick_{i}"
+        )])
+    await update.message.reply_text("Select a movie:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    await update.message.reply_text("Select a task to remove:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remove_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_authorized(update): return
     await query.answer()
 
-    track_id = int(query.data.replace("remove_", ""))
-    remove_tracked_movie(track_id)
-    await query.edit_message_text(f"Task #{track_id} removed.")
+    idx = int(query.data.replace("rmpick_", ""))
+    groups = context.bot_data.get('rm_groups', [])
+    if idx >= len(groups):
+        await query.edit_message_text("❌ Session expired. Run /remove again.")
+        return
+
+    g = groups[idx]
+    mid = re.search(r'-(\d+)$', g['slug'])
+    id_str = f" #{mid.group(1)}" if mid else ""
+    context.bot_data['rm_entries'] = g['entries']
+    context.bot_data['rm_selected'] = set()
+    context.bot_data['rm_title'] = f"{g['name']}{id_str} @ {g['theater']}"
+
+    await query.edit_message_text(
+        f"Select entries to remove:\n*{context.bot_data['rm_title']}*",
+        reply_markup=_remove_keyboard(g['entries'], set()),
+        parse_mode="Markdown"
+    )
+
+async def remove_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+
+    track_id = int(query.data.replace("rmtoggle_", ""))
+    selected = context.bot_data.get('rm_selected', set())
+    if track_id in selected:
+        selected.discard(track_id)
+    else:
+        selected.add(track_id)
+    context.bot_data['rm_selected'] = selected
+
+    entries = context.bot_data.get('rm_entries', [])
+    title = context.bot_data.get('rm_title', '')
+    await query.edit_message_text(
+        f"Select entries to remove:\n*{title}*",
+        reply_markup=_remove_keyboard(entries, selected),
+        parse_mode="Markdown"
+    )
+
+async def remove_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+
+    selected = context.bot_data.get('rm_selected', set())
+    if not selected:
+        await query.answer("Nothing selected.", show_alert=True)
+        return
+    for track_id in selected:
+        remove_tracked_movie(track_id)
+    context.bot_data.pop('rm_groups', None)
+    context.bot_data.pop('rm_entries', None)
+    context.bot_data.pop('rm_selected', None)
+    context.bot_data.pop('rm_title', None)
+    await query.edit_message_text(f"✅ Removed {len(selected)} {'entry' if len(selected) == 1 else 'entries'}.")
+
+async def remove_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+    context.bot_data.pop('rm_groups', None)
+    context.bot_data.pop('rm_entries', None)
+    context.bot_data.pop('rm_selected', None)
+    context.bot_data.pop('rm_title', None)
+    await query.edit_message_text("Cancelled.")
 
 async def refresh_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -900,7 +1005,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("movies", show_movie_registry))
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
-    app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))
+    app.add_handler(CallbackQueryHandler(remove_pick_callback, pattern="^rmpick_"))
+    app.add_handler(CallbackQueryHandler(remove_toggle_callback, pattern="^rmtoggle_"))
+    app.add_handler(CallbackQueryHandler(remove_confirm_callback, pattern="^rmconfirm$"))
+    app.add_handler(CallbackQueryHandler(remove_cancel_callback, pattern="^rmcancel$"))
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
     app.add_handler(conv_handler)
     # Must be last — catches any /command not matched above

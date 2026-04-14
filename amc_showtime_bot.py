@@ -785,31 +785,77 @@ async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.error(f"Unhandled error: {err}", exc_info=err)
 
-async def _startup_harvest(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("[Startup] Cookies stale — harvesting in background...")
-    success = await asyncio.to_thread(scraper.harvest_cookies)
-    if success:
-        logger.info("[Startup] Cookie harvest succeeded.")
+async def _startup_sequence(context: ContextTypes.DEFAULT_TYPE):
+    """Runs shortly after start — harvests cookies and refreshes movie lists, then shows welcome."""
+    cookie_age_h = (time.time() - scraper.last_cookie_harvest) / 3600
+    skip_harvest = cookie_age_h < 1  # cookies are fresh enough
+
+    try:
+        msg = await context.bot.send_message(
+            chat_id=OWNER_ID,
+            text=(
+                "🤖 *Bot Starting Up*\n\n"
+                + ("⏭ Stage 1/2: Cookies fresh — skipping harvest\n" if skip_harvest else
+                   "⏳ *Stage 1/2: Refreshing cookies...*\n"
+                   "   Launching headless Chrome (~45s on Pi)\n\n")
+                + "⏸ Stage 2/2: Fetch movie lists (~5s)\n\n"
+                "_Please wait before using commands._"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"[Startup] Failed to send status message: {e}")
+        return
+
+    # Stage 1: cookies
+    if skip_harvest:
+        cookie_ok = True
+        cookie_line = "✅ Stage 1/2: Cookies are fresh — skipped"
     else:
-        reason = scraper.last_fail_reason or "Unknown error"
-        logger.warning(f"[Startup] Cookie harvest failed: {reason}")
+        cookie_ok = await asyncio.to_thread(scraper.harvest_cookies, None, True)
+        if cookie_ok:
+            cookie_line = "✅ Stage 1/2: Cookies refreshed"
+        else:
+            reason = (scraper.last_fail_reason or "Unknown")[:80]
+            cookie_line = f"⚠️ Stage 1/2: Cookie refresh failed\n   _{reason}_"
+
+    try:
+        await msg.edit_text(
+            f"🤖 *Bot Starting Up*\n\n"
+            f"{cookie_line}\n\n"
+            f"⏳ *Stage 2/2: Fetching movie lists...*\n"
+            f"   Now Playing + Coming Soon + Events (~5s)",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    # Stage 2: movie lists
+    counts = await asyncio.to_thread(scraper.refresh_movie_list)
+    _sync_movie_registry(scraper.movie_list_cache)
+    label = {"now-playing": "Now Playing", "coming-soon": "Coming Soon", "events": "Events"}
+    list_lines = "\n".join(f"  • {label.get(k, k)}: {v}" for k, v in counts.items())
+    list_ok = any(v > 0 for v in counts.values())
+    list_line = f"✅ Stage 2/2: Movie lists loaded\n{list_lines}" if list_ok else "⚠️ Stage 2/2: Movie list fetch failed"
+
+    try:
+        await msg.edit_text(
+            f"🤖 *Bot Ready!*\n\n"
+            f"{cookie_line}\n"
+            f"{list_line}\n\n"
+            + HELP_TEXT,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.warning(f"[Startup] Final message edit failed: {e}")
         try:
-            await context.bot.send_message(
-                chat_id=OWNER_ID,
-                text=f"⚠️ Startup cookie harvest failed.\n\n{reason}\n\nTry /refreshcookies manually."
-            )
+            await msg.edit_text("🤖 Bot Ready! Use /help to see commands.")
         except Exception:
             pass
 
 async def post_init(application):
     if OWNER_ID:
-        try:
-            await application.bot.send_message(chat_id=OWNER_ID, text="🤖 Bot Started!\n\nSend /start")
-        except Exception as e:
-            logger.error(f"Failed to send startup message: {e}")
-    # Harvest cookies in background if stale (older than 6h or never harvested)
-    if time.time() - scraper.last_cookie_harvest > 21600:
-        application.job_queue.run_once(_startup_harvest, when=15)
+        application.job_queue.run_once(_startup_sequence, when=5)
 
 if __name__ == "__main__":
     init_db()

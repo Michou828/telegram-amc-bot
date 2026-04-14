@@ -57,25 +57,40 @@ def is_authorized(update: Update):
 
 # --- COMMANDS ---
 
+HELP_TEXT = (
+    "🎬 *Check & Track*\n"
+    "/check — One-time showtime lookup\n"
+    "/track — Monitor a movie for new showtimes\n\n"
+    "📋 *Tracking List*\n"
+    "/trackinglist — View all tracked movies\n"
+    "/remove — Stop tracking a movie\n\n"
+    "🎥 *Movie Browser*\n"
+    "/movies — Browse Now Playing, Coming Soon & Events\n"
+    "/refreshmovielist — Sync movie lists from AMC\n\n"
+    "⚙️ *System*\n"
+    "/botstatus — Bot health, cookie age, poll stats\n"
+    "/refreshcookies — Force a fresh cookie harvest\n\n"
+    "🔧 *Other*\n"
+    "/cancel — Cancel the current action\n"
+    "/help — Show this message"
+)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
     await update.message.reply_text(
-        "Welcome to AMC Showtime Monitor Bot!\n\n"
-        "Commands:\n"
-        "/checkshowtime - Quick check for showtimes\n"
-        "/trackmovie - Start tracking a movie\n"
-        "/trackinglist - Show tracked movies\n"
-        "/remove - Stop tracking a movie\n"
-        "/botstatus - Bot status\n"
-        "/refreshcookies - Force cookie refresh\n"
-        "/refreshmovielist - Refresh movie lists (Now Playing, Events, Coming Soon)\n"
-        "/movies - Show upcoming movie registry\n"
-        "/cancel - Cancel current action\n"
-        "/help - Show this message"
+        "Welcome to AMC Showtime Monitor Bot!\n\n" + HELP_TEXT,
+        parse_mode="Markdown"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return
+    await update.message.reply_text(
+        "❓ Unknown command.\n\n" + HELP_TEXT,
+        parse_mode="Markdown"
+    )
 
 def _age_str(ts):
     """Convert a unix timestamp to a human-readable age string."""
@@ -336,13 +351,10 @@ async def show_movie_registry(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return ConversationHandler.END
 
-    cmd = update.message.text.split()[0][1:]  # e.g. 'trackmovie' or 'checkshowtime'
-    context.user_data['action'] = 'track' if cmd == 'trackmovie' else 'check'
+    cmd = update.message.text.split()[0][1:]  # 'track' or 'check'
+    context.user_data['action'] = 'track' if cmd == 'track' else 'check'
 
-    status_msg = await update.message.reply_text(
-        "🤖 Fetching movie lists from AMC...\n"
-        "Please wait — up to 90s if cookies need refreshing (Chrome harvest on Pi)."
-    )
+    status_msg = await update.message.reply_text("🤖 Loading movie list...")
 
     try:
         full_now_playing = await asyncio.to_thread(scraper.get_movies_list, "now-playing")
@@ -358,16 +370,9 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data['movie_list'] = all_movies
 
-        seen_btn_slugs = set()
-        button_movies = []
-        for m in (full_now_playing[:8] + full_coming_soon[:6]):
-            if m['slug'] not in seen_btn_slugs:
-                button_movies.append(m)
-                seen_btn_slugs.add(m['slug'])
-
         keyboard = []
 
-        # Recent movies section — only show movies still on AMC
+        # Show up to 4 recently used movies (only those still on AMC)
         current_slugs = {m['slug'] for m in all_movies}
         recents = [r for r in get_recent_movies(limit=8) if r[0] in current_slugs][:4]
         if recents:
@@ -377,17 +382,11 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        for j in range(i, min(i + 2, len(recents)))]
                 keyboard.append(row)
 
-        for i in range(0, len(button_movies), 2):
-            row = []
-            for m in button_movies[i:i+2]:
-                idx = all_movies.index(m)
-                row.append(InlineKeyboardButton(m['name'], callback_data=f"mv_{idx}"))
-            keyboard.append(row)
         keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")])
 
         await status_msg.delete()
         await update.message.reply_text(
-            "🎬 Select a movie, type a name, or paste an AMC URL:",
+            "🎬 Type a movie name or paste an AMC URL:" + ("\n\nOr pick a recent:" if recents else ""),
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return SELECT_MOVIE
@@ -813,8 +812,8 @@ if __name__ == "__main__":
 
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("trackmovie", initiate_flow),
-            CommandHandler("checkshowtime", initiate_flow)
+            CommandHandler("track", initiate_flow),
+            CommandHandler("check", initiate_flow)
         ],
         states={
             SELECT_MOVIE: [
@@ -848,6 +847,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("refreshcookies", refresh_cookies))
     app.add_handler(CommandHandler("refreshmovielist", refresh_movie_list_cmd))
     app.add_handler(CommandHandler("movies", show_movie_registry))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
     app.add_handler(CallbackQueryHandler(remove_callback, pattern="^remove_"))

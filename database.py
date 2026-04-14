@@ -205,12 +205,14 @@ def add_recent_movie(slug, name, url):
     conn.close()
 
 def get_recent_movies(limit=8):
-    """Return recently used movies, most recent first."""
+    """Return recently used movies from the last 7 days, most recent first."""
+    cutoff = (datetime.datetime.now() - datetime.timedelta(days=7)).isoformat()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
-        'SELECT slug, name, url, last_used_at, use_count FROM recent_movies ORDER BY last_used_at DESC LIMIT ?',
-        (limit,)
+        'SELECT slug, name, url, last_used_at, use_count FROM recent_movies '
+        'WHERE last_used_at >= ? ORDER BY last_used_at DESC LIMIT ?',
+        (cutoff, limit)
     )
     rows = cursor.fetchall()
     conn.close()

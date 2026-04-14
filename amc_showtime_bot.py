@@ -377,10 +377,11 @@ async def initiate_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recents = [r for r in get_recent_movies(limit=8) if r[0] in current_slugs][:4]
         if recents:
             keyboard.append([InlineKeyboardButton("🕐 Recently Used:", callback_data="noop")])
-            for i in range(0, len(recents), 2):
-                row = [InlineKeyboardButton(recents[j][1], callback_data=f"mv_recent_{recents[j][0]}")
-                       for j in range(i, min(i + 2, len(recents)))]
-                keyboard.append(row)
+            for r in recents:
+                slug, name = r[0], r[1]
+                mid = re.search(r'-(\d+)$', slug)
+                label = f"{name} #{mid.group(1)}" if mid else name
+                keyboard.append([InlineKeyboardButton(label, callback_data=f"mv_recent_{slug}")])
 
         keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_flow")])
 
@@ -464,12 +465,16 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return SELECT_MOVIE
             elif len(matches) == 1:
                 movie_name, movie_slug = matches[0]['name'], matches[0]['slug']
-                await update.message.reply_text(f"🎯 Matched to: *{movie_name}*", parse_mode="Markdown")
+                mid = re.search(r'-(\d+)$', movie_slug)
+                id_str = f" \\#{mid.group(1)}" if mid else ""
+                await update.message.reply_text(f"🎯 Matched to: *{movie_name}*{id_str}", parse_mode="Markdown")
             else:
                 keyboard = []
                 for m in matches[:10]:
                     idx = all_movies.index(m)
-                    keyboard.append([InlineKeyboardButton(m['name'], callback_data=f"mv_{idx}")])
+                    mid = re.search(r'-(\d+)$', m['slug'])
+                    label = f"{m['name']} #{mid.group(1)}" if mid else m['name']
+                    keyboard.append([InlineKeyboardButton(label, callback_data=f"mv_{idx}")])
                 await update.message.reply_text(
                     f"🔍 Multiple matches for \"{text}\":",
                     reply_markup=InlineKeyboardMarkup(keyboard)

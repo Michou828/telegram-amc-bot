@@ -10,6 +10,7 @@ drivers/
 *.skill
 amc_bot.db
 pi_data/
+.claude.local.md
 cache.json
 research/
 *.txt

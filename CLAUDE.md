@@ -152,6 +152,12 @@ Raw text stored in DB; expanded to individual dates on every poll.
 
 ## Deployment (Raspberry Pi Zero 2 W)
 
+Pi quirks:
+- `sqlite3` CLI not installed — use `sudo python3 -c "import sqlite3; ..."`
+- `amc_bot.db` is owned by root (service runs as root) — must stop service before editing DB
+- Pi DB path: `~/telegram-amc-bot/amc_bot.db`
+- Use `pi_data/` (gitignored) for local DB copies pulled from Pi
+
 ```bash
 # Pull and restart
 git pull && sudo systemctl restart amc-showtime-bot

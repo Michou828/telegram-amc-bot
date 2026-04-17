@@ -873,11 +873,22 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
             all_data = scraper.parse_showtimes(html)
             new_showtimes_found = {}
 
-            if movie_slug in all_data:
+            # Match by exact slug first, then fall back to numeric movie ID suffix
+            # (GraphQL slugs sometimes differ from theater-page slugs, e.g. the-mandalorian-grogu-60322
+            # vs star-wars-the-mandalorian-and-grogu-60322)
+            matched_slug = movie_slug
+            if movie_slug not in all_data:
+                id_suffix = movie_slug.split('-')[-1]
+                if id_suffix.isdigit():
+                    matched_slug = next((k for k in all_data if k.endswith(f'-{id_suffix}')), None)
+                else:
+                    matched_slug = None
+
+            if matched_slug:
                 # Showtimes detected — upgrade registry status if applicable
                 if upgrade_registry_to_advanced(movie_slug):
                     logger.info(f"[Registry] {movie_name} upgraded to advanced_tickets")
-                for fmt_name, times in all_data[movie_slug].items():
+                for fmt_name, times in all_data[matched_slug].items():
                     if target_formats != "ALL":
                         target_fmts_list = [f.strip().lower() for f in target_formats.split(",")]
                         if not any(tf in fmt_name.lower() for tf in target_fmts_list):

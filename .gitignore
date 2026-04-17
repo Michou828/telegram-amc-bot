@@ -9,6 +9,7 @@ __pycache__/
 drivers/
 *.skill
 amc_bot.db
+pi_data/
 cache.json
 research/
 *.txt

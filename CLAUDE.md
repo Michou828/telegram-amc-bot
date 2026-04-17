@@ -142,6 +142,8 @@ Raw text stored in DB; expanded to individual dates on every poll.
 4. Notifies on new showtimes; `🆕` badge if format first seen within 24h
 5. Alerts owner after 3 consecutive fetch failures
 
+**Slug matching:** GraphQL sometimes returns shortened slugs (e.g. `the-mandalorian-grogu-60322`) that differ from theater-page slugs (`star-wars-the-mandalorian-and-grogu-60322`). Polling matches exact slug first, then falls back to matching by numeric movie ID suffix.
+
 ### Callback data prefixes
 - `mv_<idx>` / `mv_recent_<slug>` — movie selection
 - `theater_<slug>` — theater quick-select
@@ -166,8 +168,9 @@ rm amc_bot.db && python3 -c "from database import init_db; init_db()"
 
 ## Next Session: Pick Up Here
 
-Bot is in good shape. Potential improvements to consider:
+Bot is in good shape. Known issues / potential improvements:
 
+- [ ] Atomicity bug: `mark_showtime_seen()` is called before `send_message()` — if the Telegram send fails, the showtime is permanently lost (never re-notified)
 - [ ] Direct booking links in showtime notifications (deep link to AMC ticket page)
 - [ ] `/movies` paging or filter — 300+ coming-soon is a lot even with caps
 - [ ] Prune `seen_showtimes` for past dates automatically (table grows unbounded)

@@ -896,7 +896,6 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                     for time_val in times:
                         if not is_showtime_seen(movie_slug, theater_slug, date, fmt_name, time_val):
                             new_showtimes_found.setdefault(fmt_name, []).append(time_val)
-                            mark_showtime_seen(movie_slug, theater_slug, date, fmt_name, time_val)
 
             if new_showtimes_found:
                 msg = f"🔔 *NEW SHOWTIMES FOUND!*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
@@ -906,6 +905,9 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"\n[Book Tickets](https://www.amctheatres.com/movies/{movie_slug})"
                 try:
                     await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
+                    for fmt_name, times in new_showtimes_found.items():
+                        for time_val in times:
+                            mark_showtime_seen(movie_slug, theater_slug, date, fmt_name, time_val)
                 except Exception as e:
                     logger.error(f"Failed to send notification to {user_id}: {e}")
 

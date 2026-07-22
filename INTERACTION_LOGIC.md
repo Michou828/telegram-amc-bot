@@ -4,8 +4,8 @@ This document documents the conversation flow and formatting rules for the Teleg
 
 ## 1. Global Commands
 - `/start` & `/help`: Basic onboarding.
-- `/status`: Returns bot health and tracking statistics.
-- `/list`: Lists all current tracking tasks in a single message with horizontal dividers.
+- `/botstatus`: Returns bot health and tracking statistics.
+- `/trackinglist`: Lists all current tracking tasks in a single message with horizontal dividers.
 - `/remove`: Opens an inline menu to delete specific tracking tasks.
 
 ## 2. Conversation States (The Flow)
@@ -42,6 +42,7 @@ To maintain a high-signal, minimal aesthetic:
 - **Grouped**: Times are grouped by format.
 - **Format Label**: *[Format Name]* (Bold Italics, No Emoji)
 - **Time Slots**: [Time], [Time] (Comma separated, No Emoji)
+- **Near-capacity**: A showtime AMC reports as `AlmostFull` gets a trailing ⚠️ badge (e.g. `7:00pm ⚠️`) so it's distinguishable from wide-open times.
 
 ### Notification Logic
 - **Check**: One consolidated message per date requested.

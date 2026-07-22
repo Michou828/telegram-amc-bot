@@ -105,9 +105,14 @@ class TestPeriodicMovieListRefresh:
     /movies, /check, /track, or /refreshmovielist — so on a bot that's been up
     for weeks, a stale cache just sits there until someone happens to browse.
 
-    _refresh_movie_lists() is a periodic safety net: call get_movies_list() for
-    every list type. Its own internal TTL guard makes this a no-op (no network
-    call) when the cache is still fresh, and an actual refetch when it's stale.
+    _refresh_movie_lists() is a periodic safety net: if the cache is older than
+    12h, force a full refresh (via refresh_movie_list()) of all three list
+    types; otherwise it's a no-op. It deliberately does NOT call
+    get_movies_list() repeatedly in a loop — that function's staleness check
+    reads one last_list_refresh timestamp shared by all three list types, so
+    the first call's refetch would update that timestamp and make the next
+    call look artificially fresh, silently skipping its own refetch even
+    though its specific cached list was still stale.
     """
 
     def _make_scraper(self):
@@ -142,6 +147,35 @@ class TestPeriodicMovieListRefresh:
         assert changed is True
         slugs = {m['slug'] for m in s.movie_list_cache['coming-soon']}
         assert "dune-part-three-77032" in slugs
+
+    def test_all_three_list_types_actually_refetch_not_just_the_first(self):
+        """Regression test: reproduces the exact bug caught live in production —
+        now-playing successfully refetched *first* (real data, not empty), which
+        updated the shared last_list_refresh timestamp. That made coming-soon's
+        still-stale cache look artificially fresh on the very next call, so it
+        silently kept serving the old list and Dune stayed permanently missing.
+        (An earlier version of this test had now-playing return empty data,
+        which accidentally sidestepped the bug instead of catching it.)"""
+        s = self._make_scraper()
+        s.last_list_refresh = time.time() - 50000  # > 12h old
+        s.movie_list_cache = {
+            "now-playing": [{"name": "Old Now Playing", "slug": "old-np-1"}],
+            "coming-soon": [{"name": "Old Coming Soon", "slug": "old-cs-1"}],
+            "events": [{"name": "Old Event", "slug": "old-ev-1"}],
+        }
+        s._graphql_movies = lambda availability, first=500: {
+            "NOW_PLAYING": [_fake_movies_edge("Some Movie", "some-movie-1")],
+            "COMING_SOON": [_fake_movies_edge("Dune: Part Three", "dune-part-three-77032")],
+            "ADVANCE_TICKETS": [],
+            "EVENTS": [],
+        }.get(availability, [])
+
+        changed = bot._refresh_movie_lists(s)
+
+        assert changed is True
+        slugs = {m['slug'] for m in s.movie_list_cache['coming-soon']}
+        assert "dune-part-three-77032" in slugs
+        assert "old-cs-1" not in slugs
 
 
 class TestFormatTimesWithBadges:

@@ -384,19 +384,25 @@ def _sync_movie_registry(lists):
 def _refresh_movie_lists(scraper_obj):
     """Periodic safety net so newly-added AMC listings don't sit invisible for days.
 
-    get_movies_list() already has a 12h cache TTL — but it only ever runs when a
-    user happens to invoke /movies, /check, /track, or /refreshmovielist. A bot
-    that's been up for weeks can carry a stale cache indefinitely if nobody
-    browses movies. Calling it here piggybacks on that same TTL guard: a no-op
-    (no network call) when fresh, an actual refetch when stale.
+    get_movies_list() only ever runs when a user happens to invoke /movies,
+    /check, /track, or /refreshmovielist — a bot that's been up for weeks can
+    carry a stale cache indefinitely if nobody browses movies.
 
-    Returns True if the cache was actually refreshed (i.e. the registry should
-    be re-synced), False if everything was still fresh.
+    Deliberately does NOT call get_movies_list() three times in a row: that
+    function's 12h staleness check reads a single last_list_refresh timestamp
+    shared by all three list types, so the first call's refetch updates that
+    timestamp and makes the next call look artificially fresh, silently
+    skipping its own refetch even though its cached data is still stale.
+    refresh_movie_list() sidesteps this by clearing all three caches to empty
+    before fetching, forcing every list type to actually refetch once triggered.
+
+    Returns True if a refresh was triggered (i.e. the registry should be
+    re-synced), False if the cache was still fresh and nothing happened.
     """
-    before = scraper_obj.last_list_refresh
-    for list_type in ("now-playing", "coming-soon", "events"):
-        scraper_obj.get_movies_list(list_type)
-    return scraper_obj.last_list_refresh != before
+    if time.time() - scraper_obj.last_list_refresh < 43200:
+        return False
+    scraper_obj.refresh_movie_list()
+    return True
 
 async def refresh_movie_lists_task(context: ContextTypes.DEFAULT_TYPE):
     changed = await asyncio.to_thread(_refresh_movie_lists, scraper)

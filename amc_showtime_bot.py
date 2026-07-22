@@ -117,9 +117,13 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     list_age = _age_str(scraper.last_list_refresh)
     list_valid_for = max(0, int((43200 - (time.time() - scraper.last_list_refresh)) / 60)) if scraper.last_list_refresh else 0
 
-    # Polling health
-    failures = context.bot_data.get('consecutive_poll_failures', 0)
-    poll_status = "OK" if failures == 0 else f"⚠️ {failures} consecutive failure(s)"
+    # Polling health — per tracked (movie, theater, date) item
+    poll_failures = context.bot_data.get('poll_failures', {})
+    if not poll_failures:
+        poll_status = "OK"
+    else:
+        worst = max(poll_failures.values())
+        poll_status = f"⚠️ {len(poll_failures)} item(s) failing (worst: {worst} consecutive)"
 
     # Last fail reason (truncate if long)
     fail_reason = scraper.last_fail_reason or "None"
@@ -376,6 +380,29 @@ def _sync_movie_registry(lists):
             logger.error(f"[Registry] Failed to upsert {m['slug']}: {e}")
     logger.info(f"[Registry] Sync done: {added} added/updated")
     return added
+
+def _refresh_movie_lists(scraper_obj):
+    """Periodic safety net so newly-added AMC listings don't sit invisible for days.
+
+    get_movies_list() already has a 12h cache TTL — but it only ever runs when a
+    user happens to invoke /movies, /check, /track, or /refreshmovielist. A bot
+    that's been up for weeks can carry a stale cache indefinitely if nobody
+    browses movies. Calling it here piggybacks on that same TTL guard: a no-op
+    (no network call) when fresh, an actual refetch when stale.
+
+    Returns True if the cache was actually refreshed (i.e. the registry should
+    be re-synced), False if everything was still fresh.
+    """
+    before = scraper_obj.last_list_refresh
+    for list_type in ("now-playing", "coming-soon", "events"):
+        scraper_obj.get_movies_list(list_type)
+    return scraper_obj.last_list_refresh != before
+
+async def refresh_movie_lists_task(context: ContextTypes.DEFAULT_TYPE):
+    changed = await asyncio.to_thread(_refresh_movie_lists, scraper)
+    if changed:
+        logger.info("[MovieList] Periodic refresh picked up new data — syncing registry.")
+        _sync_movie_registry(scraper.movie_list_cache)
 
 async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -685,8 +712,9 @@ async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for date in dates:
                 user_data_copy = dict(context.user_data)
                 user_data_copy['date_range'] = date
-                results = await asyncio.to_thread(run_single_check_sync, user_data_copy)
-                if results:
+                check_result = await asyncio.to_thread(run_single_check_sync, user_data_copy)
+                if check_result:
+                    results, statuses = check_result
                     found_any = True
                     movie_slug = context.user_data['movie_slug']
                     theater_slug = context.user_data['theater_slug']
@@ -694,7 +722,7 @@ async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
                            f"📍 {context.user_data['theater_name']}\n📅 {date}\n")
                     for fmt, times in results.items():
                         badge = "🆕 " if is_format_new(movie_slug, theater_slug, date, fmt) else ""
-                        msg += f"\n{badge}*{fmt}*\n{', '.join(times)}\n"
+                        msg += f"\n{badge}*{fmt}*\n{_format_times_with_badges(times, statuses.get(fmt, {}))}\n"
                         # Mark as seen so future checks and polls track newness correctly
                         for t in times:
                             if not is_showtime_seen(movie_slug, theater_slug, date, fmt, t):
@@ -774,6 +802,16 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- POLLING LOGIC ---
 
+def _format_time_label(time_str, status):
+    """Badge a showtime that AMC itself reports as near-capacity, so the user
+    knows it may sell out imminently instead of finding out after clicking
+    through to a sold-out page. Unrecognized statuses are treated as available
+    rather than guessed at — we've only ever confirmed "Sellable"/"AlmostFull"."""
+    return f"{time_str} ⚠️" if status == "AlmostFull" else time_str
+
+def _format_times_with_badges(times, status_by_time):
+    return ", ".join(_format_time_label(t, status_by_time.get(t, "Sellable")) for t in times)
+
 def run_single_check_sync(user_data):
     date_str = user_data['date_range']
     parsed_date = parse_date_input(date_str)
@@ -784,8 +822,11 @@ def run_single_check_sync(user_data):
     logger.info(f"Checking URL: {url}")
     html = scraper.get_page_data(url)
     if not html: return None
-    all_data = scraper.parse_showtimes(html)
-    return all_data.get(movie_slug)
+    all_data, all_statuses = scraper.parse_showtimes(html)
+    times_by_format = all_data.get(movie_slug)
+    if not times_by_format:
+        return None
+    return times_by_format, all_statuses.get(movie_slug, {})
 
 def parse_date_input(text):
     try:
@@ -831,8 +872,46 @@ def get_dates_from_range(text):
             logger.error(f"Error parsing date segment '{segment}': {e}")
     return dates
 
+def _filter_future_dates(dates, today=None):
+    """Drop dates before today — no point polling showtimes for a date that already passed."""
+    if today is None:
+        today = datetime.date.today()
+    return [d for d in dates if datetime.datetime.strptime(d, "%Y-%m-%d").date() >= today]
+
 POLL_FAILURE_ALERT_THRESHOLD = 3    # alert after this many consecutive failures
 POLL_FAILURE_ALERT_COOLDOWN = 1800  # seconds between repeated alerts
+
+# get_page_data() sets this exact reason when a harvest just completed and it
+# deliberately deferred the retry to the next call — that's an expected single
+# miss by design, not evidence of a real, ongoing problem.
+_TRANSIENT_HARVEST_RETRY_REASON = "Harvest succeeded — next request should work."
+
+
+def _is_transient_harvest_retry(fail_reason):
+    return fail_reason == _TRANSIENT_HARVEST_RETRY_REASON
+
+
+def _register_poll_failure(bot_data, item_key, transient):
+    """Track consecutive failures per tracked (movie, theater, date) item.
+
+    Scoped per item so one item's failures don't compound with unrelated
+    items' failures into a shared global count. Transient harvest-retry
+    misses don't increment — they're expected to resolve on the next call.
+    """
+    failures = bot_data.setdefault('poll_failures', {})
+    if transient:
+        return failures.get(item_key, 0)
+    failures[item_key] = failures.get(item_key, 0) + 1
+    return failures[item_key]
+
+
+def _register_poll_success(bot_data, item_key):
+    bot_data.setdefault('poll_failures', {}).pop(item_key, None)
+
+
+def _poll_failure_count(bot_data, item_key):
+    return bot_data.setdefault('poll_failures', {}).get(item_key, 0)
+
 
 async def polling_task(context: ContextTypes.DEFAULT_TYPE):
     cookie_age = _age_str(scraper.last_cookie_harvest)
@@ -843,22 +922,29 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
     for row in tracked:
         track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, target_formats, _ = row
         market = market_map.get(theater_slug, 'new-york-city')
-        dates = get_dates_from_range(date_range)
+        all_dates = get_dates_from_range(date_range)
+        dates = _filter_future_dates(all_dates)
+        if len(dates) < len(all_dates):
+            logger.info(f"Skipping {len(all_dates) - len(dates)} past date(s) for {movie_name} @ {theater_slug} (track #{track_id})")
 
         for date in dates:
+            item_key = (movie_slug, theater_slug, date)
             url = f"https://www.amctheatres.com/movie-theatres/{market}/{theater_slug}/showtimes?date={date}"
             html = await asyncio.to_thread(scraper.get_page_data, url)
             if not html:
-                failures = context.bot_data.get('consecutive_poll_failures', 0) + 1
-                context.bot_data['consecutive_poll_failures'] = failures
-                logger.warning(f"Fetch failed for {movie_name} @ {theater_slug} ({date}). Consecutive failures: {failures}")
-                # Alert owner if failures hit threshold and cooldown has passed
+                transient = _is_transient_harvest_retry(scraper.last_fail_reason)
+                failures = _register_poll_failure(context.bot_data, item_key, transient)
+                if transient:
+                    logger.info(f"Deferred retry for {movie_name} @ {theater_slug} ({date}) after cookie harvest — not counted as a failure.")
+                else:
+                    logger.warning(f"Fetch failed for {movie_name} @ {theater_slug} ({date}). Consecutive failures: {failures}")
+                # Alert owner if this specific item's failures hit threshold and cooldown has passed
                 last_alert = context.bot_data.get('last_poll_alert', 0)
                 if failures >= POLL_FAILURE_ALERT_THRESHOLD and (time.time() - last_alert) > POLL_FAILURE_ALERT_COOLDOWN:
                     reason = scraper.last_fail_reason or "Unknown error"
                     alert_msg = (
                         f"⚠️ *Polling Warning*\n"
-                        f"{failures} consecutive fetch failure(s).\n\n"
+                        f"{movie_name} @ {theater_name} ({date}): {failures} consecutive fetch failure(s).\n\n"
                         f"Last error: {reason}\n\n"
                         f"Check /status for details."
                     )
@@ -868,9 +954,9 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                     except Exception as e:
                         logger.error(f"Failed to send poll alert: {e}")
                 continue
-            context.bot_data['consecutive_poll_failures'] = 0  # reset on success
+            _register_poll_success(context.bot_data, item_key)
 
-            all_data = scraper.parse_showtimes(html)
+            all_data, all_statuses = scraper.parse_showtimes(html)
             new_showtimes_found = {}
 
             # Match by exact slug first, then fall back to numeric movie ID suffix
@@ -898,10 +984,11 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                             new_showtimes_found.setdefault(fmt_name, []).append(time_val)
 
             if new_showtimes_found:
+                matched_statuses = all_statuses.get(matched_slug, {}) if matched_slug else {}
                 msg = f"🔔 *NEW SHOWTIMES FOUND!*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
                 for fmt, times in new_showtimes_found.items():
                     badge = "🆕 " if is_format_new(movie_slug, theater_slug, date, fmt) else ""
-                    msg += f"\n{badge}*{fmt}*\n{', '.join(times)}\n"
+                    msg += f"\n{badge}*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}))}\n"
                 msg += f"\n[Book Tickets](https://www.amctheatres.com/movies/{movie_slug})"
                 try:
                     await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
@@ -1048,6 +1135,9 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     app.add_error_handler(error_handler)
     app.job_queue.run_repeating(polling_task, interval=600, first=10)
+    # Safety net: keeps movie lists from silently going stale if nobody runs
+    # /movies, /check, /track, or /refreshmovielist for a long stretch.
+    app.job_queue.run_repeating(refresh_movie_lists_task, interval=3600, first=60)
 
     print("\n" + "="*30 + "\n🤖 AMC Showtime Monitor running!\n💬 Message your bot in Telegram\n🛑 Ctrl+C to stop\n" + "="*30 + "\n")
     app.run_polling()

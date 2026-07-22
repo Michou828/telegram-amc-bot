@@ -1,9 +1,13 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 try:
     from seleniumbase import SB
     SELENIUM_AVAILABLE = True
 except ImportError:
     SELENIUM_AVAILABLE = False
-    print("Warning: seleniumbase not installed. Will use system Chrome fallback.")
+    logger.warning("seleniumbase not installed. Will use system Chrome fallback.")
 
 from curl_cffi import requests
 import datetime
@@ -61,7 +65,7 @@ class AMCScraper:
                     for name, value in self.cookies.items():
                         self.session.cookies.set(name, value, domain=".amctheatres.com")
             except Exception as e:
-                print(f"Failed to load cache: {e}")
+                logger.error(f"Failed to load cache: {e}")
 
     def save_cache(self):
         try:
@@ -77,7 +81,7 @@ class AMCScraper:
             with open(CACHE_FILE, 'w') as f:
                 json.dump(data, f)
         except Exception as e:
-            print(f"Failed to save cache: {e}")
+            logger.error(f"Failed to save cache: {e}")
 
     def _default_harvest_url(self):
         """Use a showtime page — required to trigger QueueITAccepted cookie."""
@@ -93,7 +97,7 @@ class AMCScraper:
         self._session_harvest_at = time.time()  # marks that Chrome actually ran this session
         self.save_cache()
         cookie_names = ", ".join(sorted(self.cookies.keys()))
-        print(f"Stored {len(self.cookies)} cookies: {cookie_names}")
+        logger.info(f"Stored {len(self.cookies)} cookies: {cookie_names}")
 
     def harvest_cookies(self, target_url=None, force=False):
         if target_url is None:
@@ -101,13 +105,13 @@ class AMCScraper:
 
         # Only one Chrome instance at a time — second caller waits, then reuses fresh cookies
         if not self._harvest_lock.acquire(blocking=True, timeout=300):
-            print("Harvest lock timed out — skipping.")
+            logger.warning("Harvest lock timed out — skipping.")
             return False
         try:
             # If another caller ran Chrome within the last 2 min, reuse those cookies.
             # force=True bypasses this — used by /refresh so it always runs Chrome.
             if not force and self._session_harvest_at and time.time() - self._session_harvest_at < 120:
-                print("[Harvest] Cookies recently harvested — reusing.")
+                logger.info("[Harvest] Cookies recently harvested — reusing.")
                 return True
             return self._do_harvest(target_url)
         finally:
@@ -116,22 +120,22 @@ class AMCScraper:
     def _do_harvest(self, target_url):
         last_err = "Unknown error"
         for attempt in range(1, 3):
-            print(f"[Harvest] Attempt {attempt}/2...")
+            logger.info(f"[Harvest] Attempt {attempt}/2...")
 
             # UC mode only on attempt 1, and only on x86 — ARM can't run seleniumbase's bundled driver
             if SELENIUM_AVAILABLE and attempt == 1 and not _IS_ARM:
-                print("[Harvest] Trying UC mode...")
+                logger.info("[Harvest] Trying UC mode...")
                 try:
                     with SB(uc=True, headless=True) as sb:
                         sb.uc_open_with_reconnect(target_url, 4)
                         time.sleep(15)
                         sb_cookies = sb.get_cookies()
                         self._store_cookies(sb_cookies)
-                        print("[Harvest] UC mode succeeded.")
+                        logger.info("[Harvest] UC mode succeeded.")
                         return True
                 except Exception as e:
                     last_err = f"UC mode: {e}"
-                    print(f"[Harvest] UC mode failed: {e} — trying system Chrome...")
+                    logger.warning(f"[Harvest] UC mode failed: {e} — trying system Chrome...")
 
             # System Chrome fallback — longer wait on attempt 2
             wait_secs = 45 if attempt == 1 else 60
@@ -139,16 +143,16 @@ class AMCScraper:
             if ok:
                 return True
             last_err = err
-            print(f"[Harvest] Attempt {attempt}/2 failed: {err}")
+            logger.warning(f"[Harvest] Attempt {attempt}/2 failed: {err}")
             if attempt == 1:
-                print("[Harvest] Waiting 10s before retry...")
+                logger.info("[Harvest] Waiting 10s before retry...")
                 time.sleep(10)
 
         reason = f"Harvest failed after 2 attempts. Last error: {last_err}"
         self.last_fail_reason = reason
         self.last_failed_fetch = time.time()
         self._harvest_cooldown_until = time.time() + HARVEST_COOLDOWN
-        print(f"[Harvest] Cooldown set for {HARVEST_COOLDOWN // 60} minutes.")
+        logger.error(f"[Harvest] Cooldown set for {HARVEST_COOLDOWN // 60} minutes.")
         self.save_cache()
         return False
 
@@ -165,7 +169,7 @@ class AMCScraper:
             system_chromedriver = next((p for p in ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver"] if os.path.exists(p)), None)
             chromedriver_bin = system_chromedriver or shutil.which("chromedriver")
 
-            print(f"[Harvest] Starting headless Chrome ({chromium_bin}), driver ({chromedriver_bin}), wait={wait_secs}s...")
+            logger.info(f"[Harvest] Starting headless Chrome ({chromium_bin}), driver ({chromedriver_bin}), wait={wait_secs}s...")
             options = Options()
             options.add_argument("--headless")
             options.add_argument("--no-sandbox")
@@ -202,7 +206,7 @@ class AMCScraper:
                 # can silently fail if Chrome crashed (OOM etc.), leaving RAM-hungry zombies
                 for proc in ("chromedriver", "chromium", "chromium-browser"):
                     subprocess.run(["pkill", "-f", proc], capture_output=True)
-                print("[Harvest] Chrome processes cleaned up.")
+                logger.info("[Harvest] Chrome processes cleaned up.")
 
             if not selenium_cookies:
                 raise Exception("Browser returned no cookies")
@@ -230,17 +234,17 @@ class AMCScraper:
             if time.time() < self._harvest_cooldown_until:
                 remaining = int((self._harvest_cooldown_until - time.time()) / 60)
                 reason = f"Blocked (status={response.status_code}), harvest cooldown active ({remaining}m remaining)"
-                print(reason)
+                logger.warning(reason)
                 self.last_failed_fetch = time.time()
                 self.last_fail_reason = reason
                 self.save_cache()
                 return None
 
-            print(f"Blocked (status={response.status_code}), harvesting cookies from showtime URL...")
+            logger.warning(f"Blocked (status={response.status_code}), harvesting cookies from showtime URL...")
             if self.harvest_cookies():  # always harvest from showtime URL — required for QueueITAccepted cookie
                 # Don't re-fetch immediately — cookies need a moment to be recognized.
                 # The next call to get_page_data will succeed with the fresh cookies.
-                print("Harvest succeeded — fresh cookies ready for next request.")
+                logger.info("Harvest succeeded — fresh cookies ready for next request.")
                 self.last_fail_reason = "Harvest succeeded — next request should work."
                 self.save_cache()
                 return None
@@ -248,22 +252,29 @@ class AMCScraper:
 
         except Exception as e:
             reason = f"Request exception: {e}"
-            print(reason)
+            logger.error(reason)
             self.last_failed_fetch = time.time()
             self.last_fail_reason = reason
             self.save_cache()
         return None
 
     def parse_showtimes(self, html):
-        """Returns showtimes keyed by movie SLUG for 100% matching accuracy."""
-        if not html: return {}
+        """Returns (results, statuses):
+          results  = { movie_slug: { format_name: [times] } }
+          statuses = { movie_slug: { format_name: { time: status } } }
+        `status` is AMC's own sellability field (confirmed live values: "Sellable",
+        "AlmostFull") — kept separate from `results` so every existing caller that
+        just wants the list of times is unaffected.
+        """
+        if not html: return {}, {}
 
-        results = {}  # { movie_slug: { format_name: [times] } }
+        results = {}
+        statuses = {}
 
         chunks = re.findall(r'self\.__next_f\.push\(\[\d+,(?:"(.*?)"|null)\]\)', html, re.DOTALL)
         full_data = "".join([c for c in chunks if c]).replace('\\"', '"').replace('\\\\', '\\')
 
-        if not full_data: return {}
+        if not full_data: return {}, {}
 
         movie_matches = list(re.finditer(r'{"avatarImage":{.*?},"name":"([^"]+)","slug":"([^"]+)"', full_data))
         format_matches = list(re.finditer(r'"h3",null,{"id":"[^"]+","children":.*?{"children":"([^"]+)"}', full_data))
@@ -275,6 +286,9 @@ class AMCScraper:
         for s in showtime_matches:
             time_val = f"{s.group(2)}{s.group(3)}"
             pos = s.start()
+
+            status_match = re.search(r'"status":"([^"]+)"', s.group(0))
+            status = status_match.group(1) if status_match else "Sellable"
 
             current_slug = "unknown"
             movie_pos = -1
@@ -292,12 +306,15 @@ class AMCScraper:
 
             if current_slug not in results:
                 results[current_slug] = {}
+                statuses[current_slug] = {}
             if current_format not in results[current_slug]:
                 results[current_slug][current_format] = []
+                statuses[current_slug][current_format] = {}
             if time_val not in results[current_slug][current_format]:
                 results[current_slug][current_format].append(time_val)
+            statuses[current_slug][current_format][time_val] = status
 
-        return results
+        return results, statuses
 
     def _graphql_movies(self, availability, first=500):
         """Query AMC's GraphQL API for movies by availability type. Returns list of edge nodes."""
@@ -319,11 +336,11 @@ class AMCScraper:
             )
             data = resp.json()
             if "errors" in data:
-                print(f"[GraphQL] {availability}: {data['errors'][0]['message']}")
+                logger.error(f"[GraphQL] {availability}: {data['errors'][0]['message']}")
                 return []
             return data["data"]["viewer"]["movies"]["edges"]
         except Exception as e:
-            print(f"[GraphQL] {availability}: exception={e}")
+            logger.error(f"[GraphQL] {availability}: exception={e}")
             return []
 
     def _movie_from_node(self, node, has_advanced_tickets=False):
@@ -337,6 +354,7 @@ class AMCScraper:
 
     def get_movies_list(self, list_type="now-playing"):
         if time.time() - self.last_list_refresh < 43200 and self.movie_list_cache.get(list_type):
+            logger.debug(f"[MovieList] {list_type}: serving cached ({len(self.movie_list_cache[list_type])} movies)")
             return self.movie_list_cache[list_type]
 
         movies = []
@@ -371,7 +389,7 @@ class AMCScraper:
                     seen_slugs.add(node["slug"])
                     movies.append(self._movie_from_node(node))
 
-        print(f"[MovieList] {list_type}: {len(movies)} movies via GraphQL")
+        logger.info(f"[MovieList] {list_type}: {len(movies)} movies via GraphQL")
         if movies:
             self.movie_list_cache[list_type] = movies
             self.last_list_refresh = time.time()
@@ -392,6 +410,7 @@ class AMCScraper:
         return counts
 
 if __name__ == "__main__":
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
     scraper = AMCScraper()
     movies = scraper.get_movies_list()
     print(f"Found {len(movies)} movies.")

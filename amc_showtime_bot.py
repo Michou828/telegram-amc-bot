@@ -886,6 +886,7 @@ def _filter_future_dates(dates, today=None):
 
 POLL_FAILURE_ALERT_THRESHOLD = 3    # alert after this many consecutive failures
 POLL_FAILURE_ALERT_COOLDOWN = 1800  # seconds between repeated alerts
+POLL_REQUEST_DELAY = 1.5            # seconds between sequential showtime fetches — a tracked movie can span dozens of dates at the same theater; firing them back-to-back with no spacing was tripping Cloudflare's soft rate limiting on a random few requests each cycle
 
 # get_page_data() sets this exact reason when a harvest just completed and it
 # deliberately deferred the retry to the next call — that's an expected single
@@ -937,6 +938,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
             item_key = (movie_slug, theater_slug, date)
             url = f"https://www.amctheatres.com/movie-theatres/{market}/{theater_slug}/showtimes?date={date}"
             html = await asyncio.to_thread(scraper.get_page_data, url)
+            await asyncio.sleep(POLL_REQUEST_DELAY)
             if not html:
                 transient = _is_transient_harvest_retry(scraper.last_fail_reason)
                 failures = _register_poll_failure(context.bot_data, item_key, transient)

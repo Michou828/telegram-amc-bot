@@ -23,7 +23,10 @@ from database import (
     remove_tracked_movie, is_showtime_seen, mark_showtime_seen,
     is_format_new, upsert_registry_movie, remove_registry_movie,
     upgrade_registry_to_advanced, get_registry_movies,
-    add_recent_movie, get_recent_movies
+    add_recent_movie, get_recent_movies,
+    add_slug_reconciliation, get_slug_reconciliation_pair, get_slug_reconciliation,
+    set_slug_reconciliation_message_id, resolve_slug_reconciliation,
+    apply_slug_reconciliation, get_pending_slug_reconciliations
 )
 from scraper import AMCScraper
 
@@ -390,13 +393,96 @@ def _sync_movie_registry(lists):
     return {"added": added, "candidates": candidates, "ambiguous": ambiguous}
 
 async def _handle_reconciliation_results(context, candidates, ambiguous):
-    """Filled in by Task 5 — for now, just makes the 3 call sites' new
-    return-value shape visible in the logs so this task is independently
-    verifiable before Telegram/DB behavior is added."""
-    if candidates:
-        logger.info(f"[Reconciliation] {len(candidates)} candidate(s) found: {candidates}")
-    if ambiguous:
-        logger.info(f"[Reconciliation] {len(ambiguous)} ambiguous match(es) found: {ambiguous}")
+    for old_slug, new_slug, movie_name in candidates:
+        try:
+            if get_slug_reconciliation_pair(old_slug, new_slug) is not None:
+                continue  # already proposed or resolved for this exact pair — never re-ask
+            rec_id = add_slug_reconciliation(old_slug, new_slug, movie_name)
+            text = (
+                f"🔄 *Possible AMC ID change detected*\n\n"
+                f"*{movie_name}* seems to have a new ID:\n"
+                f"`{old_slug}` → `{new_slug}`\n\n"
+                f"Update tracking? Auto-applies in 1 hour if no response."
+            )
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Update", callback_data=f"reconcile_yes_{rec_id}"),
+                InlineKeyboardButton("❌ Keep old ID", callback_data=f"reconcile_no_{rec_id}")
+            ]])
+            msg = await context.bot.send_message(
+                chat_id=OWNER_ID, text=text, parse_mode="Markdown", reply_markup=keyboard
+            )
+            set_slug_reconciliation_message_id(rec_id, msg.message_id)
+            context.job_queue.run_once(
+                _auto_confirm_reconciliation_job,
+                when=RECONCILIATION_AUTO_CONFIRM_SECONDS,
+                data=rec_id,
+                name=f"reconcile_auto_{rec_id}"
+            )
+        except Exception as e:
+            # Isolated per-candidate: one failure (DB write or Telegram send)
+            # doesn't stop the rest of this batch from being proposed, and
+            # nothing is marked resolved, so it's naturally retried next sync.
+            logger.error(f"[Reconciliation] Failed to propose {old_slug} -> {new_slug} for {movie_name}: {e}")
+
+    for old_slug, movie_name, candidate_slugs in ambiguous:
+        text = (
+            f"⚠️ *Ambiguous AMC ID match*\n\n"
+            f"*{movie_name}* (tracked as `{old_slug}`) is missing from the latest "
+            f"list, but multiple entries share its name:\n"
+            + "\n".join(f"  • `{s}`" for s in candidate_slugs)
+            + "\n\nResolve manually with /remove + /track if needed."
+        )
+        try:
+            await context.bot.send_message(chat_id=OWNER_ID, text=text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"[Reconciliation] Failed to send ambiguous notice for {movie_name}: {e}")
+
+async def _resolve_reconciliation(context, rec_id, new_status):
+    row = get_slug_reconciliation(rec_id)
+    if row is None:
+        return
+    _, old_slug, new_slug, movie_name, status, proposed_at, resolved_at, message_id = row
+    if status != "pending":
+        return  # already resolved by the other path (button click vs. auto-confirm job)
+
+    if not resolve_slug_reconciliation(rec_id, new_status):
+        return  # lost the race between the read above and this write
+
+    if new_status in ("confirmed", "auto_confirmed"):
+        apply_slug_reconciliation(old_slug, new_slug)
+        verb = "Auto-updated (no response within 1 hour)" if new_status == "auto_confirmed" else "Updated"
+        result_text = f"✅ {verb} — *{movie_name}* now tracked as `{new_slug}`."
+    else:
+        result_text = f"❌ Left as-is — *{movie_name}* still tracked as `{old_slug}`."
+
+    if message_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=OWNER_ID, message_id=message_id, text=result_text, parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"[Reconciliation] Failed to edit message for reconciliation #{rec_id}: {e}")
+
+
+async def reconcile_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+    rec_id = int(query.data.split("_")[-1])
+    await _resolve_reconciliation(context, rec_id, "confirmed")
+
+
+async def reconcile_decline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+    rec_id = int(query.data.split("_")[-1])
+    await _resolve_reconciliation(context, rec_id, "declined")
+
+
+async def _auto_confirm_reconciliation_job(context: ContextTypes.DEFAULT_TYPE):
+    rec_id = context.job.data
+    await _resolve_reconciliation(context, rec_id, "auto_confirmed")
 
 def _refresh_movie_lists(scraper_obj):
     """Periodic safety net so newly-added AMC listings don't sit invisible for days.
@@ -1202,6 +1288,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("movies", show_movie_registry))
     app.add_handler(CallbackQueryHandler(confirm_refresh_callback, pattern="^confirm_refresh$"))
     app.add_handler(CallbackQueryHandler(cancel_refresh_callback, pattern="^cancel_refresh$"))
+    app.add_handler(CallbackQueryHandler(reconcile_confirm_callback, pattern=r"^reconcile_yes_\d+$"))
+    app.add_handler(CallbackQueryHandler(reconcile_decline_callback, pattern=r"^reconcile_no_\d+$"))
     app.add_handler(CallbackQueryHandler(remove_pick_callback, pattern="^rmpick_"))
     app.add_handler(CallbackQueryHandler(remove_toggle_callback, pattern="^rmtoggle_"))
     app.add_handler(CallbackQueryHandler(remove_confirm_callback, pattern="^rmconfirm$"))

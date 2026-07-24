@@ -271,3 +271,29 @@ class TestSlugReconciliationDetection:
         coming_soon = [{"slug": "the-odyssey-99999", "name": "The Odyssey"}]
         candidates, ambiguous = bot._find_slug_reconciliation_candidates(tracked, coming_soon)
         assert candidates == [("the-odyssey-76238", "the-odyssey-99999", "The Odyssey")]
+
+
+class TestReconciliationAutoConfirmTiming:
+    """No telegram.ext persistence is configured, so a pending reconciliation's
+    1-hour auto-confirm timer is lost on a restart (which happens after every
+    deploy). Startup needs to recompute remaining time rather than trusting
+    an in-memory job survived.
+    """
+
+    def test_recent_proposal_has_remaining_time(self):
+        now = datetime.datetime(2026, 7, 24, 12, 0, 0)
+        proposed_at = datetime.datetime(2026, 7, 24, 11, 30, 0).isoformat()  # 30 min ago
+        remaining = bot._seconds_until_auto_confirm(proposed_at, now=now)
+        assert remaining == 1800  # 30 min left of the 1-hour window
+
+    def test_just_proposed_has_nearly_full_window(self):
+        now = datetime.datetime(2026, 7, 24, 12, 0, 0)
+        proposed_at = now.isoformat()
+        remaining = bot._seconds_until_auto_confirm(proposed_at, now=now)
+        assert remaining == 3600
+
+    def test_overdue_proposal_is_zero_or_negative(self):
+        now = datetime.datetime(2026, 7, 24, 14, 0, 0)
+        proposed_at = datetime.datetime(2026, 7, 24, 11, 0, 0).isoformat()  # 3h ago
+        remaining = bot._seconds_until_auto_confirm(proposed_at, now=now)
+        assert remaining <= 0

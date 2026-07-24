@@ -920,6 +920,19 @@ def _find_slug_reconciliation_candidates(tracked_pairs, coming_soon_list):
             ambiguous.append((old_slug, movie_name, matches))
     return candidates, ambiguous
 
+
+RECONCILIATION_AUTO_CONFIRM_SECONDS = 3600  # auto-apply a proposed slug update after this long with no owner response
+
+def _seconds_until_auto_confirm(proposed_at_iso, now=None):
+    """Returns remaining seconds until a reconciliation's auto-confirm
+    window closes. <= 0 means the window already passed (overdue)."""
+    if now is None:
+        now = datetime.datetime.now()
+    proposed_at = datetime.datetime.fromisoformat(proposed_at_iso)
+    elapsed = (now - proposed_at).total_seconds()
+    return RECONCILIATION_AUTO_CONFIRM_SECONDS - elapsed
+
+
 POLL_FAILURE_ALERT_THRESHOLD = 3    # alert after this many consecutive failures
 POLL_FAILURE_ALERT_COOLDOWN = 1800  # seconds between repeated alerts
 POLL_REQUEST_DELAY = 1.5            # seconds between sequential showtime fetches — a tracked movie can span dozens of dates at the same theater; firing them back-to-back with no spacing was tripping Cloudflare's soft rate limiting on a random few requests each cycle

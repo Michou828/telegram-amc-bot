@@ -61,6 +61,19 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS slug_reconciliations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            old_slug TEXT NOT NULL,
+            new_slug TEXT NOT NULL,
+            movie_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            proposed_at TEXT NOT NULL,
+            resolved_at TEXT,
+            message_id INTEGER
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -214,6 +227,78 @@ def get_recent_movies(limit=8):
         'WHERE last_used_at >= ? ORDER BY last_used_at DESC LIMIT ?',
         (cutoff, limit)
     )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def add_slug_reconciliation(old_slug, new_slug, movie_name):
+    now = datetime.datetime.now().isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO slug_reconciliations (old_slug, new_slug, movie_name, proposed_at) VALUES (?, ?, ?, ?)',
+        (old_slug, new_slug, movie_name, now)
+    )
+    conn.commit()
+    rec_id = cursor.lastrowid
+    conn.close()
+    return rec_id
+
+_RECONCILIATION_COLUMNS = 'id, old_slug, new_slug, movie_name, status, proposed_at, resolved_at, message_id'
+
+def get_slug_reconciliation_pair(old_slug, new_slug):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        f'SELECT {_RECONCILIATION_COLUMNS} FROM slug_reconciliations WHERE old_slug = ? AND new_slug = ?',
+        (old_slug, new_slug)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def get_slug_reconciliation(rec_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(f'SELECT {_RECONCILIATION_COLUMNS} FROM slug_reconciliations WHERE id = ?', (rec_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+def set_slug_reconciliation_message_id(rec_id, message_id):
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute('UPDATE slug_reconciliations SET message_id = ? WHERE id = ?', (message_id, rec_id))
+    conn.commit()
+    conn.close()
+
+def resolve_slug_reconciliation(rec_id, status):
+    """Atomically transitions a reconciliation from 'pending' to `status`.
+    Returns False if it was already resolved by the time this ran (race
+    between a button click and the auto-confirm job) — caller should treat
+    False as a no-op, not an error.
+    """
+    now = datetime.datetime.now().isoformat()
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE slug_reconciliations SET status = ?, resolved_at = ? WHERE id = ? AND status = 'pending'",
+        (status, now, rec_id)
+    )
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+def apply_slug_reconciliation(old_slug, new_slug):
+    conn = sqlite3.connect(DB_NAME)
+    conn.execute('UPDATE tracked_movies SET movie_slug = ? WHERE movie_slug = ?', (new_slug, old_slug))
+    conn.commit()
+    conn.close()
+
+def get_pending_slug_reconciliations():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT {_RECONCILIATION_COLUMNS} FROM slug_reconciliations WHERE status = 'pending'")
     rows = cursor.fetchall()
     conn.close()
     return rows

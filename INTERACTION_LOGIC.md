@@ -47,3 +47,4 @@ To maintain a high-signal, minimal aesthetic:
 ### Notification Logic
 - **Check**: One consolidated message per date requested.
 - **Track**: One grouped message per date found. Triggered immediately upon setup completion and thereafter every 10 minutes.
+- **Slug Reconciliation**: Proactive, unprompted message when AMC reissues a tracked movie's ID (e.g. an `events` placeholder graduating to a real `coming-soon` listing). Presents **✅ Update** / **❌ Keep old ID** buttons; auto-applies after 1 hour of silence and edits the original message to state the outcome. Ambiguous matches (2+ same-named candidates) get a plain heads-up with no buttons.

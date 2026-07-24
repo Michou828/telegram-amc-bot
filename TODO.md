@@ -38,5 +38,6 @@
 ## Phase 5: Polish & Feature Expansion [IN PROGRESS]
 - [x] Maintenance Mode: `/refresh` command to force cookie harvest manually
 - [x] `🆕` Badge: Formats first seen within 24h marked in both `/check` and poll notifications
+- [x] Movie ID Reconciliation: Detects AMC slug/ID reissues on tracked movies, prompts owner via Telegram (auto-applies after 1h), restart-safe
 - [ ] Direct Booking Links: Refining the Next.js deep link format for ticket purchase URLs
 - [ ] `harvest.py`: Standalone Mac script for manual cookie refresh and transfer to Pi

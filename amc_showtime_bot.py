@@ -365,7 +365,12 @@ async def noop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 def _sync_movie_registry(lists):
-    """Update movie_registry from fresh list data. Called after refreshmovielist."""
+    """Update movie_registry from fresh list data. Called after refreshmovielist.
+
+    Returns {"added": int, "candidates": list, "ambiguous": list} — the
+    latter two come from comparing currently-tracked movies against this
+    sync's coming-soon payload, to catch AMC slug/ID reissues.
+    """
     coming_soon = lists.get("coming-soon", [])
     logger.info(f"[Registry] Syncing: {len(coming_soon)} coming-soon movies")
     added = 0
@@ -379,7 +384,19 @@ def _sync_movie_registry(lists):
         except Exception as e:
             logger.error(f"[Registry] Failed to upsert {m['slug']}: {e}")
     logger.info(f"[Registry] Sync done: {added} added/updated")
-    return added
+
+    tracked_pairs = [(row[3], row[2]) for row in get_tracked_movies()]  # (movie_slug, movie_name)
+    candidates, ambiguous = _find_slug_reconciliation_candidates(tracked_pairs, coming_soon)
+    return {"added": added, "candidates": candidates, "ambiguous": ambiguous}
+
+async def _handle_reconciliation_results(context, candidates, ambiguous):
+    """Filled in by Task 5 — for now, just makes the 3 call sites' new
+    return-value shape visible in the logs so this task is independently
+    verifiable before Telegram/DB behavior is added."""
+    if candidates:
+        logger.info(f"[Reconciliation] {len(candidates)} candidate(s) found: {candidates}")
+    if ambiguous:
+        logger.info(f"[Reconciliation] {len(ambiguous)} ambiguous match(es) found: {ambiguous}")
 
 def _refresh_movie_lists(scraper_obj):
     """Periodic safety net so newly-added AMC listings don't sit invisible for days.
@@ -408,7 +425,8 @@ async def refresh_movie_lists_task(context: ContextTypes.DEFAULT_TYPE):
     changed = await asyncio.to_thread(_refresh_movie_lists, scraper)
     if changed:
         logger.info("[MovieList] Periodic refresh picked up new data — syncing registry.")
-        _sync_movie_registry(scraper.movie_list_cache)
+        result = _sync_movie_registry(scraper.movie_list_cache)
+        await _handle_reconciliation_results(context, result["candidates"], result["ambiguous"])
 
 async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -417,7 +435,8 @@ async def refresh_movie_list_cmd(update: Update, context: ContextTypes.DEFAULT_T
     )
     counts = await asyncio.to_thread(scraper.refresh_movie_list)
     if any(v > 0 for v in counts.values()):
-        _sync_movie_registry(scraper.movie_list_cache)
+        result = _sync_movie_registry(scraper.movie_list_cache)
+        await _handle_reconciliation_results(context, result["candidates"], result["ambiguous"])
         label = {"now-playing": "Now Playing", "coming-soon": "Coming Soon", "events": "Events"}
         lines = "\n".join(f"  {label.get(k, k)}: {v}" for k, v in counts.items())
         reg_movies = get_registry_movies()
@@ -1114,7 +1133,8 @@ async def _startup_sequence(context: ContextTypes.DEFAULT_TYPE):
 
     # Stage 2: movie lists
     counts = await asyncio.to_thread(scraper.refresh_movie_list)
-    _sync_movie_registry(scraper.movie_list_cache)
+    result = _sync_movie_registry(scraper.movie_list_cache)
+    await _handle_reconciliation_results(context, result["candidates"], result["ambiguous"])
     label = {"now-playing": "Now Playing", "coming-soon": "Coming Soon", "events": "Events"}
     list_lines = "\n".join(f"  • {label.get(k, k)}: {v}" for k, v in counts.items())
     list_ok = any(v > 0 for v in counts.values())

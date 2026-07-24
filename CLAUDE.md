@@ -87,6 +87,7 @@ Tables:
 - `seen_showtimes` — dedup log (grows forever; delete db to reset notifications)
 - `movie_registry` — coming-soon movies; status: `future_release` / `advanced_tickets`
 - `recent_movies` — 7-day rolling window of searched/selected movies
+- `slug_reconciliations` — proposed movie slug/ID rewrites for `tracked_movies`; status: `pending` / `confirmed` / `declined` / `auto_confirmed` / `ambiguous` (the last is a dedup-only marker, never surfaced to the sweep/auto-confirm path)
 
 ## `amc_showtime_bot.py`
 
@@ -114,6 +115,8 @@ On every start, `_startup_sequence` runs 5s after launch:
 2. Harvests cookies (skipped if <1h old)
 3. Refreshes all three movie lists via GraphQL
 4. Edits message to "Bot Ready!" + full help text
+
+`_sweep_pending_reconciliations` also runs 5s after launch (separate `run_once`, alongside `_startup_sequence`): re-arms or immediately resolves any `pending` slug reconciliation whose 1h auto-confirm window was lost to the restart (no `telegram.ext` persistence is configured).
 
 ### Movie list auto-refresh
 
@@ -157,11 +160,20 @@ Raw text stored in DB; expanded to individual dates on every poll.
 
 **Slug matching:** GraphQL sometimes returns shortened slugs (e.g. `the-mandalorian-grogu-60322`) that differ from theater-page slugs (`star-wars-the-mandalorian-and-grogu-60322`). Polling matches exact slug first, then falls back to matching by numeric movie ID suffix.
 
+### Movie ID reconciliation
+
+AMC occasionally reissues a movie's slug/ID (e.g. graduating from an `events` placeholder to a real `coming-soon` entry). `_sync_movie_registry` runs `_find_slug_reconciliation_candidates(tracked_pairs, coming_soon)` on every real registry sync (12h cache-expiry refresh or `/refreshmovielist`) to detect a tracked slug that's vanished from the fresh list while exactly one same-named, differently-slugged entry has appeared.
+
+- Exactly 1 match → `_handle_reconciliation_results` inserts a `pending` row in `slug_reconciliations`, dedup'd on `(old_slug, new_slug)`, and sends an owner prompt with `reconcile_yes_<id>` / `reconcile_no_<id>` buttons. Auto-applies (`_auto_confirm_reconciliation_job`) after 1h with no response.
+- 2+ matches → ambiguous; a plain heads-up is sent (no buttons, no auto-action), dedup'd via a sentinel row (`status='ambiguous'`, `new_slug` encodes the sorted candidate slugs) so the same ambiguous combination doesn't re-nag every sync.
+- `_resolve_reconciliation` edits the original prompt in place; if `message_id` is missing or the edit fails, it falls back to sending a fresh message — a reconciliation is never applied silently with zero owner notification.
+
 ### Callback data prefixes
 - `mv_<idx>` / `mv_recent_<slug>` — movie selection
 - `theater_<slug>` — theater quick-select
 - `fmt_<name>` — format toggle in `/track`
 - `rmpick_<i>` / `rmtoggle_<id>` / `rmconfirm` / `rmcancel` — remove flow
+- `reconcile_yes_<id>` / `reconcile_no_<id>` — slug reconciliation confirm/decline
 
 ## Deployment (Raspberry Pi Zero 2 W)
 
@@ -189,6 +201,8 @@ rm amc_bot.db && python3 -c "from database import init_db; init_db()"
 
 Bot is in good shape. Fixed 2026-07-21/22: spurious "Polling Warning" alerts (per-item failure tracking, harvest retries no longer miscounted), polling of expired tracked dates, movie-list cache going stale for days with no auto-refresh, and AlmostFull showtimes now badged. Details in git log (`e76f400`, `c4c506e`) and `test_amc_showtime_bot.py`/`test_scraper.py`.
 
+Added 2026-07-24: movie ID reconciliation — detects a tracked movie's AMC slug/ID being reissued (e.g. Dune: Part Three's `dune-part-three-83391` → `dune-part-three-77032`) and prompts the owner to update `tracked_movies` rather than silently dead-polling forever. See "Movie ID reconciliation" above, `docs/superpowers/specs/2026-07-24-movie-id-reconciliation-design.md`, and `TestSlugReconciliationDetection`/`TestReconciliationAutoConfirmTiming` in `test_amc_showtime_bot.py`.
+
 Known issues / potential improvements:
 
 - [ ] Direct booking links in showtime notifications — currently links to the movie's general page, not a showtime-specific deep link (deferred: AMC's Next.js deep-link format for ticket purchase URLs still needs reverse-engineering)
@@ -196,5 +210,5 @@ Known issues / potential improvements:
 - [ ] Prune `seen_showtimes` for past dates automatically (table grows unbounded)
 - [ ] Multi-theater tracking for same movie (currently one theater per tracked entry)
 - [ ] `/trackinglist` still displays tracked dates that have already passed (polling now skips them, but the DB/display side was left untouched — `/remove` still works to clean them up manually)
-- [ ] AMC occasionally reissues a movie's slug/ID when it graduates from an early "event" placeholder listing to a real Coming Soon entry (e.g. Dune: Part Three went from `dune-part-three-83391` under `events` to `dune-part-three-77032` under `coming-soon`) — the bot has no logic to reconcile these as the same movie; the old slug just becomes an orphaned, harmless duplicate
+- [ ] Movie ID reconciliation doesn't clean up the orphaned old-slug row left behind in `movie_registry` after a confirmed rewrite — harmless duplicate, out of scope per the design doc
 - [ ] No confirmed "sold out" signal exists anywhere in AMC's showtime data (checked ~1,250 live showtimes + raw payload text, found only `Sellable`/`AlmostFull`) — if a sold-out showtime notification recurs, capture the specific movie/theater/date/time so the live payload can be inspected at that exact moment

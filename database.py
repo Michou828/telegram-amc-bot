@@ -231,13 +231,17 @@ def get_recent_movies(limit=8):
     conn.close()
     return rows
 
-def add_slug_reconciliation(old_slug, new_slug, movie_name):
+def add_slug_reconciliation(old_slug, new_slug, movie_name, status='pending'):
+    """status defaults to 'pending' for real yes/no candidates. Ambiguous-case
+    dedup markers pass status='ambiguous' so they never surface in
+    get_pending_slug_reconciliations() and never get auto-confirmed/applied.
+    """
     now = datetime.datetime.now().isoformat()
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(
-        'INSERT INTO slug_reconciliations (old_slug, new_slug, movie_name, proposed_at) VALUES (?, ?, ?, ?)',
-        (old_slug, new_slug, movie_name, now)
+        'INSERT INTO slug_reconciliations (old_slug, new_slug, movie_name, status, proposed_at) VALUES (?, ?, ?, ?, ?)',
+        (old_slug, new_slug, movie_name, status, now)
     )
     conn.commit()
     rec_id = cursor.lastrowid

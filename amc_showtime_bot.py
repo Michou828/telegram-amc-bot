@@ -425,6 +425,13 @@ async def _handle_reconciliation_results(context, candidates, ambiguous):
             logger.error(f"[Reconciliation] Failed to propose {old_slug} -> {new_slug} for {movie_name}: {e}")
 
     for old_slug, movie_name, candidate_slugs in ambiguous:
+        # Dedup sentinel: encode the sorted candidate set into new_slug so
+        # repeat syncs with the same ambiguous combination don't re-nag.
+        # status='ambiguous' keeps this row out of get_pending_slug_reconciliations()
+        # entirely — no auto-confirm job, no buttons, nothing to ever apply.
+        sentinel = "AMBIGUOUS:" + "|".join(sorted(candidate_slugs))
+        if get_slug_reconciliation_pair(old_slug, sentinel) is not None:
+            continue  # already reported this exact ambiguous combination
         text = (
             f"⚠️ *Ambiguous AMC ID match*\n\n"
             f"*{movie_name}* (tracked as `{old_slug}`) is missing from the latest "
@@ -434,7 +441,11 @@ async def _handle_reconciliation_results(context, candidates, ambiguous):
         )
         try:
             await context.bot.send_message(chat_id=OWNER_ID, text=text, parse_mode="Markdown")
+            add_slug_reconciliation(old_slug, sentinel, movie_name, status="ambiguous")
         except Exception as e:
+            # Insert only after a successful send: if the send fails, no dedup
+            # row is written and this notice is naturally retried next sync
+            # (same pattern as the candidate loop above).
             logger.error(f"[Reconciliation] Failed to send ambiguous notice for {movie_name}: {e}")
 
 async def _resolve_reconciliation(context, rec_id, new_status):
@@ -460,8 +471,18 @@ async def _resolve_reconciliation(context, rec_id, new_status):
             await context.bot.edit_message_text(
                 chat_id=OWNER_ID, message_id=message_id, text=result_text, parse_mode="Markdown"
             )
+            return
         except Exception as e:
             logger.error(f"[Reconciliation] Failed to edit message for reconciliation #{rec_id}: {e}")
+
+    # No message_id (the original send_message failed before it could be
+    # recorded, or this row otherwise never got one) — fall back to a fresh
+    # send so a resolved reconciliation is never applied with zero owner
+    # notification. Also covers edit_message_text failing above.
+    try:
+        await context.bot.send_message(chat_id=OWNER_ID, text=result_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"[Reconciliation] Failed to send fallback message for reconciliation #{rec_id}: {e}")
 
 
 async def reconcile_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

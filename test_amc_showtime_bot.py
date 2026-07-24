@@ -207,3 +207,67 @@ class TestFormatTimesWithBadges:
     def test_missing_status_entries_default_to_no_badge(self):
         result = bot._format_times_with_badges(["10:30am"], {})
         assert result == "10:30am"
+
+
+class TestSlugReconciliationDetection:
+    """A tracked movie's slug can go stale when AMC reissues it (event
+    placeholder -> real Coming Soon listing, e.g. Dune: Part Three going
+    from dune-part-three-83391 to dune-part-three-77032 while keeping the
+    exact same title). Detecting this means comparing tracked slugs against
+    each fresh coming-soon payload.
+    """
+
+    def test_reissued_id_is_detected_as_candidate(self):
+        tracked = [("dune-part-three-83391", "Dune: Part Three")]
+        coming_soon = [
+            {"slug": "dune-part-three-77032", "name": "Dune: Part Three"},
+            {"slug": "the-odyssey-76238", "name": "The Odyssey"},
+        ]
+        candidates, ambiguous = bot._find_slug_reconciliation_candidates(tracked, coming_soon)
+        assert candidates == [("dune-part-three-83391", "dune-part-three-77032", "Dune: Part Three")]
+        assert ambiguous == []
+
+    def test_normal_graduation_out_of_coming_soon_is_not_flagged(self):
+        # The tracked movie left coming-soon (e.g. now playing) — nothing
+        # else in the fresh list shares its name, so there's no candidate.
+        tracked = [("the-odyssey-76238", "The Odyssey")]
+        coming_soon = [{"slug": "dune-part-three-77032", "name": "Dune: Part Three"}]
+        candidates, ambiguous = bot._find_slug_reconciliation_candidates(tracked, coming_soon)
+        assert candidates == []
+        assert ambiguous == []
+
+    def test_still_present_slug_is_not_flagged(self):
+        tracked = [("dune-part-three-77032", "Dune: Part Three")]
+        coming_soon = [{"slug": "dune-part-three-77032", "name": "Dune: Part Three"}]
+        candidates, ambiguous = bot._find_slug_reconciliation_candidates(tracked, coming_soon)
+        assert candidates == []
+        assert ambiguous == []
+
+    def test_ambiguous_match_is_reported_separately_not_as_a_candidate(self):
+        tracked = [("some-movie-111", "Some Movie")]
+        coming_soon = [
+            {"slug": "some-movie-222", "name": "Some Movie"},
+            {"slug": "some-movie-333", "name": "Some Movie"},
+        ]
+        candidates, ambiguous = bot._find_slug_reconciliation_candidates(tracked, coming_soon)
+        assert candidates == []
+        assert ambiguous == [("some-movie-111", "Some Movie", ["some-movie-222", "some-movie-333"])]
+
+    def test_name_match_is_case_insensitive(self):
+        tracked = [("dune-part-three-83391", "dune: part three")]
+        coming_soon = [{"slug": "dune-part-three-77032", "name": "Dune: Part Three"}]
+        candidates, ambiguous = bot._find_slug_reconciliation_candidates(tracked, coming_soon)
+        assert candidates == [("dune-part-three-83391", "dune-part-three-77032", "dune: part three")]
+
+    def test_duplicate_tracked_pairs_only_produce_one_candidate(self):
+        # The Odyssey is tracked at the same theater across 3 separate
+        # date-range rows in tracked_movies — the same (slug, name) pair
+        # repeats. Should still only produce one candidate, not three.
+        tracked = [
+            ("the-odyssey-76238", "The Odyssey"),
+            ("the-odyssey-76238", "The Odyssey"),
+            ("the-odyssey-76238", "The Odyssey"),
+        ]
+        coming_soon = [{"slug": "the-odyssey-99999", "name": "The Odyssey"}]
+        candidates, ambiguous = bot._find_slug_reconciliation_candidates(tracked, coming_soon)
+        assert candidates == [("the-odyssey-76238", "the-odyssey-99999", "The Odyssey")]

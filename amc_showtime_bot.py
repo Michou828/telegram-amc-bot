@@ -884,6 +884,42 @@ def _filter_future_dates(dates, today=None):
         today = datetime.date.today()
     return [d for d in dates if datetime.datetime.strptime(d, "%Y-%m-%d").date() >= today]
 
+
+def _find_slug_reconciliation_candidates(tracked_pairs, coming_soon_list):
+    """Compare currently-tracked (movie_slug, movie_name) pairs against a
+    fresh coming-soon payload to find AMC ID reissues.
+
+    Returns (candidates, ambiguous):
+      candidates: list of (old_slug, new_slug, movie_name) — exactly one
+        same-named, differently-slugged entry exists in the fresh list for
+        a tracked slug that's missing from it.
+      ambiguous: list of (old_slug, movie_name, [candidate_slugs]) — 2+
+        same-named matches found; too risky to auto-resolve.
+
+    A tracked slug simply missing from the fresh list with nothing else
+    sharing its name (0 matches) is the normal case — e.g. it graduated to
+    now-playing — and isn't reported at all.
+    """
+    fresh_slugs = {m['slug'] for m in coming_soon_list}
+    candidates = []
+    ambiguous = []
+    seen_old_slugs = set()
+    for old_slug, movie_name in tracked_pairs:
+        if old_slug in seen_old_slugs:
+            continue
+        seen_old_slugs.add(old_slug)
+        if old_slug in fresh_slugs:
+            continue
+        matches = [
+            m['slug'] for m in coming_soon_list
+            if m['name'].strip().lower() == movie_name.strip().lower() and m['slug'] != old_slug
+        ]
+        if len(matches) == 1:
+            candidates.append((old_slug, matches[0], movie_name))
+        elif len(matches) > 1:
+            ambiguous.append((old_slug, movie_name, matches))
+    return candidates, ambiguous
+
 POLL_FAILURE_ALERT_THRESHOLD = 3    # alert after this many consecutive failures
 POLL_FAILURE_ALERT_COOLDOWN = 1800  # seconds between repeated alerts
 POLL_REQUEST_DELAY = 1.5            # seconds between sequential showtime fetches — a tracked movie can span dozens of dates at the same theater; firing them back-to-back with no spacing was tripping Cloudflare's soft rate limiting on a random few requests each cycle

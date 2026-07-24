@@ -484,6 +484,24 @@ async def _auto_confirm_reconciliation_job(context: ContextTypes.DEFAULT_TYPE):
     rec_id = context.job.data
     await _resolve_reconciliation(context, rec_id, "auto_confirmed")
 
+async def _sweep_pending_reconciliations(context: ContextTypes.DEFAULT_TYPE):
+    """Runs once at startup. job_queue/bot_data don't persist across
+    restarts (no telegram.ext persistence is configured), so a pending
+    reconciliation's 1-hour timer is otherwise lost on every deploy. This
+    re-arms it for the remaining time, or resolves it immediately if the
+    window already passed while the bot was down.
+    """
+    for row in get_pending_slug_reconciliations():
+        rec_id = row[0]
+        proposed_at = row[5]
+        remaining = _seconds_until_auto_confirm(proposed_at)
+        if remaining <= 0:
+            await _resolve_reconciliation(context, rec_id, "auto_confirmed")
+        else:
+            context.job_queue.run_once(
+                _auto_confirm_reconciliation_job, when=remaining, data=rec_id, name=f"reconcile_auto_{rec_id}"
+            )
+
 def _refresh_movie_lists(scraper_obj):
     """Periodic safety net so newly-added AMC listings don't sit invisible for days.
 
@@ -1244,6 +1262,7 @@ async def _startup_sequence(context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application):
     if OWNER_ID:
         application.job_queue.run_once(_startup_sequence, when=5)
+        application.job_queue.run_once(_sweep_pending_reconciliations, when=5)
 
 if __name__ == "__main__":
     init_db()

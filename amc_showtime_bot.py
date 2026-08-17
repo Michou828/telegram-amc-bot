@@ -953,11 +953,15 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- POLLING LOGIC ---
 
 def _format_time_label(time_str, status):
-    """Badge a showtime that AMC itself reports as near-capacity, so the user
-    knows it may sell out imminently instead of finding out after clicking
-    through to a sold-out page. Unrecognized statuses are treated as available
-    rather than guessed at — we've only ever confirmed "Sellable"/"AlmostFull"."""
-    return f"{time_str} ⚠️" if status == "AlmostFull" else time_str
+    """Badge a showtime with AMC's own sellability signal: AlmostFull means it
+    may sell out imminently, ComingSoon means it isn't purchasable yet. Any
+    other status is treated as available rather than guessed at — we've only
+    ever confirmed "Sellable"/"AlmostFull"/"ComingSoon" live."""
+    if status == "AlmostFull":
+        return f"{time_str} ⚠️"
+    if status == "ComingSoon":
+        return f"{time_str} 🕒"
+    return time_str
 
 def _format_times_with_badges(times, status_by_time):
     return ", ".join(_format_time_label(t, status_by_time.get(t, "Sellable")) for t in times)

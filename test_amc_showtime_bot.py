@@ -208,6 +208,17 @@ class TestFormatTimesWithBadges:
         result = bot._format_times_with_badges(["10:30am"], {})
         assert result == "10:30am"
 
+    def test_coming_soon_time_gets_clock_badge(self):
+        assert bot._format_time_label("9:00am", "ComingSoon") == "9:00am 🕒"
+
+    def test_formats_mixed_list_with_coming_soon(self):
+        times = ["9:00am", "1:15pm", "4:00pm"]
+        status_by_time = {"9:00am": "ComingSoon", "1:15pm": "AlmostFull", "4:00pm": "Sellable"}
+
+        result = bot._format_times_with_badges(times, status_by_time)
+
+        assert result == "9:00am 🕒, 1:15pm ⚠️, 4:00pm"
+
 
 class TestSlugReconciliationDetection:
     """A tracked movie's slug can go stale when AMC reissues it (event

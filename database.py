@@ -32,6 +32,13 @@ def init_db():
             first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Migrate existing installs — status is intentionally left NULL on old rows
+    # (not defaulted to 'Sellable') so the polling loop can distinguish "unknown
+    # baseline, backfill silently" from "confirmed unchanged, no notification."
+    try:
+        cursor.execute("ALTER TABLE seen_showtimes ADD COLUMN status TEXT")
+    except Exception:
+        pass  # column already exists
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS movie_registry (
@@ -113,13 +120,36 @@ def is_showtime_seen(movie_slug, theater_slug, date, format_name, time_val):
     conn.close()
     return row is not None
 
-def mark_showtime_seen(movie_slug, theater_slug, date, format_name, time_val):
+def mark_showtime_seen(movie_slug, theater_slug, date, format_name, time_val, status):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO seen_showtimes (movie_slug, theater_slug, date, format, time)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO seen_showtimes (movie_slug, theater_slug, date, format, time, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (movie_slug, theater_slug, date, format_name, time_val, status))
+    conn.commit()
+    conn.close()
+
+def get_showtime_status(movie_slug, theater_slug, date, format_name, time_val):
+    """Returns the stored status, or None. Only meaningful to call once
+    is_showtime_seen() has confirmed the row exists — see module docs."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT status FROM seen_showtimes
+        WHERE movie_slug = ? AND theater_slug = ? AND date = ? AND format = ? AND time = ?
     ''', (movie_slug, theater_slug, date, format_name, time_val))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def update_showtime_status(movie_slug, theater_slug, date, format_name, time_val, status):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE seen_showtimes SET status = ?
+        WHERE movie_slug = ? AND theater_slug = ? AND date = ? AND format = ? AND time = ?
+    ''', (status, movie_slug, theater_slug, date, format_name, time_val))
     conn.commit()
     conn.close()
 

@@ -966,6 +966,23 @@ def _format_time_label(time_str, status):
 def _format_times_with_badges(times, status_by_time):
     return ", ".join(_format_time_label(t, status_by_time.get(t, "Sellable")) for t in times)
 
+def _classify_showtime(seen, stored_status, current_status):
+    """What a polled (format, time) entry means for notification purposes.
+
+    seen: whether this exact (movie, theater, date, format, time) tuple has
+      ever been recorded in seen_showtimes before.
+    stored_status: the status recorded when it was last seen, or None if
+      seen but predates the status column (no baseline to compare against).
+    current_status: AMC's status for this showtime on this poll.
+    """
+    if not seen:
+        return "new"
+    if stored_status is None:
+        return "backfill"
+    if stored_status == "ComingSoon" and current_status != "ComingSoon":
+        return "now_available"
+    return "unchanged"
+
 def run_single_check_sync(user_data):
     date_str = user_data['date_range']
     parsed_date = parse_date_input(date_str)

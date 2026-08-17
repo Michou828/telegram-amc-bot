@@ -220,6 +220,41 @@ class TestFormatTimesWithBadges:
         assert result == "9:00am 🕒, 1:15pm ⚠️, 4:00pm"
 
 
+class TestClassifyShowtime:
+    """Decides what a polled (format, time) entry means for notification
+    purposes, given whether it's been seen before and what status was
+    recorded then vs. now. Kept pure/DB-free so the branching logic that
+    drives the polling loop's two notification paths is unit-testable.
+    """
+
+    def test_unseen_is_new(self):
+        assert bot._classify_showtime(seen=False, stored_status=None, current_status="ComingSoon") == "new"
+
+    def test_unseen_is_new_regardless_of_current_status(self):
+        assert bot._classify_showtime(seen=False, stored_status=None, current_status="Sellable") == "new"
+
+    def test_seen_with_no_stored_status_is_backfill(self):
+        assert bot._classify_showtime(seen=True, stored_status=None, current_status="ComingSoon") == "backfill"
+
+    def test_seen_with_no_stored_status_is_backfill_even_if_currently_sellable(self):
+        assert bot._classify_showtime(seen=True, stored_status=None, current_status="Sellable") == "backfill"
+
+    def test_coming_soon_to_sellable_is_now_available(self):
+        assert bot._classify_showtime(seen=True, stored_status="ComingSoon", current_status="Sellable") == "now_available"
+
+    def test_coming_soon_to_almost_full_is_now_available(self):
+        assert bot._classify_showtime(seen=True, stored_status="ComingSoon", current_status="AlmostFull") == "now_available"
+
+    def test_coming_soon_to_coming_soon_is_unchanged(self):
+        assert bot._classify_showtime(seen=True, stored_status="ComingSoon", current_status="ComingSoon") == "unchanged"
+
+    def test_sellable_to_almost_full_is_unchanged(self):
+        assert bot._classify_showtime(seen=True, stored_status="Sellable", current_status="AlmostFull") == "unchanged"
+
+    def test_sellable_to_sellable_is_unchanged(self):
+        assert bot._classify_showtime(seen=True, stored_status="Sellable", current_status="Sellable") == "unchanged"
+
+
 class TestSlugReconciliationDetection:
     """A tracked movie's slug can go stale when AMC reissues it (event
     placeholder -> real Coming Soon listing, e.g. Dune: Part Three going

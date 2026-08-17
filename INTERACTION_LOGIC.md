@@ -43,8 +43,10 @@ To maintain a high-signal, minimal aesthetic:
 - **Format Label**: *[Format Name]* (Bold Italics, No Emoji)
 - **Time Slots**: [Time], [Time] (Comma separated, No Emoji)
 - **Near-capacity**: A showtime AMC reports as `AlmostFull` gets a trailing ⚠️ badge (e.g. `7:00pm ⚠️`) so it's distinguishable from wide-open times.
+- **Not yet on sale**: A showtime AMC reports as `ComingSoon` gets a trailing 🕒 badge (e.g. `9:00am 🕒`) so it's distinguishable from bookable times.
 
 ### Notification Logic
 - **Check**: One consolidated message per date requested.
 - **Track**: One grouped message per date found. Triggered immediately upon setup completion and thereafter every 10 minutes.
+- **Available Soon → On Sale**: When a tracked showtime's status transitions from `ComingSoon` to `Sellable`/`AlmostFull`, a separate **🎟️ TICKETS NOW AVAILABLE!** message is sent (same layout as the standard notification). First discovery while still `ComingSoon` is included in the normal "NEW SHOWTIMES FOUND" message with the 🕒 badge, not suppressed.
 - **Slug Reconciliation**: Proactive, unprompted message when AMC reissues a tracked movie's ID (e.g. an `events` placeholder graduating to a real `coming-soon` listing). Presents **✅ Update** / **❌ Keep old ID** buttons; auto-applies after 1 hour of silence and edits the original message to state the outcome. Ambiguous matches (2+ same-named candidates) get a plain heads-up with no buttons.

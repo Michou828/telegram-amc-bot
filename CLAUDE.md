@@ -177,6 +177,8 @@ AMC occasionally reissues a movie's slug/ID (e.g. graduating from an `events` pl
 
 ## Deployment (Raspberry Pi Zero 2 W)
 
+SSH: `ssh amc-bot-pi` (passwordless key auth, configured in `~/.ssh/config` on Mac — do NOT use the raw `user@hostname` form, which falls back to password auth and will hang non-interactively).
+
 Pi quirks:
 - `sqlite3` CLI not installed — use `sudo python3 -c "import sqlite3; ..."`
 - `amc_bot.db` is owned by root (service runs as root) — must stop service before editing DB
@@ -185,16 +187,19 @@ Pi quirks:
 
 ```bash
 # Pull and restart
-git pull && sudo systemctl restart amc-showtime-bot
+ssh amc-bot-pi "cd ~/telegram-amc-bot && git pull && sudo systemctl restart amc-showtime-bot"
 
 # Watch logs
-sudo journalctl -u amc-showtime-bot -f
+ssh amc-bot-pi "sudo journalctl -u amc-showtime-bot -f"
 
 # Bootstrap cookies from Mac (avoids first harvest on Pi)
-scp cache.json <user>@<pi-ip>:~/telegram-amc-bot/
+scp cache.json amc-bot-pi:~/telegram-amc-bot/
 
 # Reset seen showtimes (re-notifies on next poll)
-rm amc_bot.db && python3 -c "from database import init_db; init_db()"
+ssh amc-bot-pi "cd ~/telegram-amc-bot && rm amc_bot.db && python3 -c 'from database import init_db; init_db()'"
+
+# Query DB directly (root-owned — needs sudo)
+ssh amc-bot-pi "sudo python3 -c \"import sqlite3; conn = sqlite3.connect('/home/michou/telegram-amc-bot/amc_bot.db'); ...\""
 ```
 
 ## Next Session: Pick Up Here
@@ -203,12 +208,15 @@ Bot is in good shape. Fixed 2026-07-21/22: spurious "Polling Warning" alerts (pe
 
 Added 2026-07-24: movie ID reconciliation — detects a tracked movie's AMC slug/ID being reissued (e.g. Dune: Part Three's `dune-part-three-83391` → `dune-part-three-77032`) and prompts the owner to update `tracked_movies` rather than silently dead-polling forever. See "Movie ID reconciliation" above, `docs/superpowers/specs/2026-07-24-movie-id-reconciliation-design.md`, and `TestSlugReconciliationDetection`/`TestReconciliationAutoConfirmTiming` in `test_amc_showtime_bot.py`.
 
+Added 2026-08-17: Available Soon tracking — AMC now lists future showtimes with `status: "ComingSoon"` before they go on sale. Previously these got folded into a normal "new showtime" notification and then never re-checked, so the bot never noticed when they actually became purchasable. `seen_showtimes` now has a `status` column (NULL-defaulted for pre-existing rows, so already-tracked movies backfill correctly without a spurious notification); `ComingSoon` times get a 🕒 badge; and a distinct `🎟️ TICKETS NOW AVAILABLE!` notification fires when a tracked showtime transitions from `ComingSoon` to `Sellable`/`AlmostFull`. See `docs/superpowers/specs/2026-08-17-available-soon-tracking-design.md`, `docs/superpowers/plans/2026-08-17-available-soon-tracking.md`, `_classify_showtime`/`TestClassifyShowtime` in `amc_showtime_bot.py`/`test_amc_showtime_bot.py`, and `test_database.py`. Deployed to the Pi 2026-08-17 and confirmed live: Dune: Part Three's pre-existing `ComingSoon` rows backfilled correctly with no spurious notification.
+
 Known issues / potential improvements:
 
 - [ ] Direct booking links in showtime notifications — currently links to the movie's general page, not a showtime-specific deep link (deferred: AMC's Next.js deep-link format for ticket purchase URLs still needs reverse-engineering)
 - [ ] `/movies` paging or filter — 300+ coming-soon is a lot even with caps
-- [ ] Prune `seen_showtimes` for past dates automatically (table grows unbounded)
+- [ ] Prune `seen_showtimes` for past dates automatically (table grows unbounded) — also covers orphaned rows left behind when AMC retimes a showtime (e.g. 7:00pm → 7:30pm creates a new dedup row and abandons the old one, which then sits at `status = NULL` forever since polling only touches currently-listed times); confirmed live on Dune: Part Three 2026-08-17, harmless but worth folding into the same cleanup pass
 - [ ] Multi-theater tracking for same movie (currently one theater per tracked entry)
 - [ ] `/trackinglist` still displays tracked dates that have already passed (polling now skips them, but the DB/display side was left untouched — `/remove` still works to clean them up manually)
 - [ ] Movie ID reconciliation doesn't clean up the orphaned old-slug row left behind in `movie_registry` after a confirmed rewrite — harmless duplicate, out of scope per the design doc
-- [ ] No confirmed "sold out" signal exists anywhere in AMC's showtime data (checked ~1,250 live showtimes + raw payload text, found only `Sellable`/`AlmostFull`) — if a sold-out showtime notification recurs, capture the specific movie/theater/date/time so the live payload can be inspected at that exact moment
+- [ ] No confirmed "sold out" signal exists anywhere in AMC's showtime data (checked ~1,250 live showtimes + raw payload text, found only `Sellable`/`AlmostFull`/`ComingSoon`) — if a sold-out showtime notification recurs, capture the specific movie/theater/date/time so the live payload can be inspected at that exact moment
+- [ ] The `seen_showtimes.status` column only updates while a showtime is `ComingSoon` (to avoid re-nagging) — once it flips to `Sellable`/`AlmostFull` the stored value is frozen, so `Sellable → AlmostFull` never updates and a hypothetical `Sellable → ComingSoon` regression would permanently strand the row (a second on-sale transition would go unnotified). Not observed live; noted as a design tradeoff, not a bug

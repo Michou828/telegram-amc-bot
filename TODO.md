@@ -39,5 +39,6 @@
 - [x] Maintenance Mode: `/refresh` command to force cookie harvest manually
 - [x] `🆕` Badge: Formats first seen within 24h marked in both `/check` and poll notifications
 - [x] Movie ID Reconciliation: Detects AMC slug/ID reissues on tracked movies, prompts owner via Telegram (auto-applies after 1h), restart-safe
+- [x] Available Soon Tracking: Detects AMC's `ComingSoon` showtime status (not yet on sale), badges it (🕒), and sends a distinct "TICKETS NOW AVAILABLE" notification when it transitions to `Sellable`/`AlmostFull`; existing tracked movies backfill silently instead of misfiring
 - [ ] Direct Booking Links: Refining the Next.js deep link format for ticket purchase URLs
 - [ ] `harvest.py`: Standalone Mac script for manual cookie refresh and transfer to Pi

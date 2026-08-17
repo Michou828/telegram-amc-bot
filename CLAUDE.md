@@ -39,7 +39,7 @@ sudo apt install chromium chromium-driver
 
 ```bash
 pip install pytest
-python -m pytest test_amc_showtime_bot.py test_scraper.py
+python -m pytest test_amc_showtime_bot.py test_scraper.py test_database.py
 ```
 
 Unit tests for the pure/testable logic (date filtering, per-item poll failure tracking, movie-list refresh staleness handling, showtime status badging). `test_scraper.py` builds synthetic AMC RSC payloads to exercise `parse_showtimes()` without hitting the network. No tests cover the Telegram handlers themselves (conversation flow, callbacks) — those still need manual verification.
@@ -71,7 +71,7 @@ Supporting files:
 
 - `harvest_cookies(target_url=None, force=False)` — acquires mutex, calls `_do_harvest()`
 - `get_page_data(url)` — Layer B fetch; triggers harvest on block; 30-min cooldown after failure
-- `parse_showtimes(html)` — parses RSC chunks; returns `(results, statuses)` where `results = {movie_slug: {format: [times]}}` and `statuses = {movie_slug: {format: {time: status}}}`. `status` is AMC's own sellability field (confirmed values: `Sellable`, `AlmostFull` — no confirmed "sold out" value has ever been observed in the data, live sampling and payload text search both came up empty)
+- `parse_showtimes(html)` — parses RSC chunks; returns `(results, statuses)` where `results = {movie_slug: {format: [times]}}` and `statuses = {movie_slug: {format: {time: status}}}`. `status` is AMC's own sellability field (confirmed values: `Sellable`, `AlmostFull`, `ComingSoon` — the last meaning not yet on sale — no confirmed "sold out" value has ever been observed in the data, live sampling and payload text search both came up empty)
 - `get_movies_list(list_type)` — GraphQL fetch for `now-playing`/`coming-soon`/`events`; 12h cache. **Caution:** its staleness check reads a single shared `last_list_refresh` timestamp across all three list types — calling it back-to-back for multiple list types is unsafe (see bug below). Only call it for a single list type at a time, or go through `refresh_movie_list()`.
 - `refresh_movie_list()` — clears per-list cache entries then re-fetches all three (important: must clear before fetching to avoid stale-cache skip bug — see below)
 
@@ -84,7 +84,7 @@ SQLite: `amc_bot.db` — never auto-cleared.
 
 Tables:
 - `tracked_movies` — active tracking tasks
-- `seen_showtimes` — dedup log (grows forever; delete db to reset notifications)
+- `seen_showtimes` — dedup log (grows forever; delete db to reset notifications); also tracks per-showtime status to detect ComingSoon-to-on-sale transitions
 - `movie_registry` — coming-soon movies; status: `future_release` / `advanced_tickets`
 - `recent_movies` — 7-day rolling window of searched/selected movies
 - `slug_reconciliations` — proposed movie slug/ID rewrites for `tracked_movies`; status: `pending` / `confirmed` / `declined` / `auto_confirmed` / `ambiguous` (the last is a dedup-only marker, never surfaced to the sweep/auto-confirm path)
@@ -154,8 +154,8 @@ Raw text stored in DB; expanded to individual dates on every poll.
 `polling_task` runs every 600s. For each tracked movie:
 1. Expands stored date string to individual dates, then drops any date before today (`_filter_future_dates`) — a tracked range doesn't get cleaned out of the DB, so without this the bot would otherwise keep fetching expired dates forever
 2. Fetches `https://www.amctheatres.com/movie-theatres/<market>/<theater>/showtimes?date=<date>`
-3. Parses showtimes, filters by tracked formats; `AlmostFull` showtimes get a ⚠️ badge (`_format_times_with_badges`) so near-capacity times are distinguishable from wide-open ones
-4. Notifies on new showtimes; `🆕` badge if format first seen within 24h
+3. Parses showtimes, filters by tracked formats; `AlmostFull` showtimes get a ⚠️ badge and `ComingSoon` a 🕒 badge (`_format_times_with_badges`) so near-capacity and not-yet-on-sale times are distinguishable from wide-open ones
+4. Notifies on new showtimes; `🆕` badge if format first seen within 24h; a showtime transitioning from `ComingSoon` to `Sellable`/`AlmostFull` triggers a separate "TICKETS NOW AVAILABLE" notification
 5. Alerts owner after 3 consecutive fetch failures **for that specific (movie, theater, date) item** — failures are tracked per item (`_register_poll_failure`/`_poll_failure_count`, keyed in `bot_data['poll_failures']`), not a single global counter, so one item's issue doesn't push unrelated items toward the alert threshold. A harvest that just ran and reports `_is_transient_harvest_retry` doesn't count as a failure at all — it's an expected single miss by design (the code deliberately defers the retry to the next call rather than re-fetching immediately)
 
 **Slug matching:** GraphQL sometimes returns shortened slugs (e.g. `the-mandalorian-grogu-60322`) that differ from theater-page slugs (`star-wars-the-mandalorian-and-grogu-60322`). Polling matches exact slug first, then falls back to matching by numeric movie ID suffix.

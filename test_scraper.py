@@ -32,7 +32,8 @@ def _sample_page(showtimes):
 class TestParseShowtimeStatus:
     """Bug: sold-out/near-capacity showtimes were notified identically to wide-open
     ones because parse_showtimes() only extracted showtimeId/time/amPm and threw
-    away AMC's own "status" field (confirmed live values: "Sellable", "AlmostFull").
+    away AMC's own "status" field (confirmed live values: "Sellable", "AlmostFull",
+    "ComingSoon").
     """
 
     def test_captures_sellable_status(self):
@@ -52,6 +53,15 @@ class TestParseShowtimeStatus:
 
         assert results["moana-72474"]["IMAX with Laser at AMC"] == ["1:15pm"]
         assert statuses["moana-72474"]["IMAX with Laser at AMC"]["1:15pm"] == "AlmostFull"
+
+    def test_captures_coming_soon_status(self):
+        s = AMCScraper()
+        html = _sample_page([_showtime_json(3, "ComingSoon", "6:00", "pm")])
+
+        results, statuses = s.parse_showtimes(html)
+
+        assert results["moana-72474"]["IMAX with Laser at AMC"] == ["6:00pm"]
+        assert statuses["moana-72474"]["IMAX with Laser at AMC"]["6:00pm"] == "ComingSoon"
 
     def test_multiple_showtimes_tracked_independently(self):
         s = AMCScraper()

@@ -263,8 +263,9 @@ class AMCScraper:
           results  = { movie_slug: { format_name: [times] } }
           statuses = { movie_slug: { format_name: { time: status } } }
         `status` is AMC's own sellability field (confirmed live values: "Sellable",
-        "AlmostFull") — kept separate from `results` so every existing caller that
-        just wants the list of times is unaffected.
+        "AlmostFull", "ComingSoon" — the last meaning a showtime not yet on sale)
+        — kept separate from `results` so every existing caller that just wants
+        the list of times is unaffected.
         """
         if not html: return {}, {}
 

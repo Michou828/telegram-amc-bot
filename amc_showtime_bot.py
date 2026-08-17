@@ -877,7 +877,7 @@ async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         # Mark as seen so future checks and polls track newness correctly
                         for t in times:
                             if not is_showtime_seen(movie_slug, theater_slug, date, fmt, t):
-                                mark_showtime_seen(movie_slug, theater_slug, date, fmt, t)
+                                mark_showtime_seen(movie_slug, theater_slug, date, fmt, t, statuses.get(fmt, {}).get(t, "Sellable"))
                     await update.message.reply_text(msg, parse_mode="Markdown")
                 await asyncio.sleep(1)
             if not found_any:

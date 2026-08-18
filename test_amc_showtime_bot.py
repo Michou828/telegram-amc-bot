@@ -343,3 +343,23 @@ class TestReconciliationAutoConfirmTiming:
         proposed_at = datetime.datetime(2026, 7, 24, 11, 0, 0).isoformat()  # 3h ago
         remaining = bot._seconds_until_auto_confirm(proposed_at, now=now)
         assert remaining <= 0
+
+
+class TestBuildTrackingGroups:
+    def _row(self, track_id, movie_slug, theater_slug, formats, active_tracking=0):
+        return (track_id, 1, "Dune: Part Three", movie_slug, "AMC Lincoln Square 13",
+                theater_slug, "1/9-1/12", formats, "2026-08-18T00:00:00", active_tracking)
+
+    def test_includes_active_tracking_flag(self):
+        rows = [self._row(1, "dune-part-three-77032", "amc-lincoln-square-13", "IMAX", active_tracking=1)]
+
+        groups = bot._build_tracking_groups(rows)
+
+        assert groups[0]['active_tracking'] is True
+
+    def test_defaults_active_tracking_false(self):
+        rows = [self._row(1, "dune-part-three-77032", "amc-lincoln-square-13", "IMAX", active_tracking=0)]
+
+        groups = bot._build_tracking_groups(rows)
+
+        assert groups[0]['active_tracking'] is False

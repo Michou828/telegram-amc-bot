@@ -162,11 +162,12 @@ def _build_tracking_groups(tracked):
     groups = {}
     order = []
     for row in tracked:
-        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, formats, _ = row
+        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, formats, _created_at, active_tracking = row
         key = (movie_slug, theater_slug)
         if key not in groups:
             groups[key] = {'name': movie_name, 'slug': movie_slug,
-                           'theater': theater_name, 'formats': {}, 'entries': []}
+                           'theater': theater_name, 'formats': {}, 'entries': [],
+                           'active_tracking': bool(active_tracking)}
             order.append(key)
         groups[key]['entries'].append((track_id, formats, date_range))
         for fmt in [f.strip() for f in formats.split(',')]:
@@ -1142,7 +1143,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
     market_map = {t['slug']: t.get('market', 'new-york-city') for t in THEATERS_DATA}
 
     for row in tracked:
-        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, target_formats, _ = row
+        track_id, user_id, movie_name, movie_slug, theater_name, theater_slug, date_range, target_formats, _created_at, active_tracking = row
         market = market_map.get(theater_slug, 'new-york-city')
         all_dates = get_dates_from_range(date_range)
         dates = _filter_future_dates(all_dates)

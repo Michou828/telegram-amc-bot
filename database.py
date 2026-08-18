@@ -21,6 +21,14 @@ def init_db():
         )
     ''')
 
+    # Migrate existing installs — active_tracking defaults to 0 (off) for
+    # both pre-existing rows and any new row created via add_tracked_movie,
+    # since it's an explicit opt-in via /activetracking, never automatic.
+    try:
+        cursor.execute("ALTER TABLE tracked_movies ADD COLUMN active_tracking INTEGER DEFAULT 0")
+    except Exception:
+        pass  # column already exists
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS seen_showtimes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -333,6 +341,35 @@ def get_pending_slug_reconciliations():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(f"SELECT {_RECONCILIATION_COLUMNS} FROM slug_reconciliations WHERE status = 'pending'")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def set_active_tracking(user_id, movie_slug, enabled):
+    """Enable/disable active tracking for every tracked_movies row matching
+    this user and movie — active tracking applies to the whole tracked
+    entry (all theaters/dates/formats already tracked for the movie)."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        'UPDATE tracked_movies SET active_tracking = ? WHERE user_id = ? AND movie_slug = ?',
+        (1 if enabled else 0, user_id, movie_slug)
+    )
+    conn.commit()
+    conn.close()
+
+def get_movies_for_active_tracking(user_id):
+    """Distinct (movie_slug, movie_name, active_tracking) for this user's
+    tracked movies — feeds the /activetracking picker. active_tracking is
+    uniform across a movie's rows since set_active_tracking always updates
+    all of them together."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT DISTINCT movie_slug, movie_name, active_tracking FROM tracked_movies '
+        'WHERE user_id = ? ORDER BY movie_name',
+        (user_id,)
+    )
     rows = cursor.fetchall()
     conn.close()
     return rows

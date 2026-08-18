@@ -374,6 +374,21 @@ def get_movies_for_active_tracking(user_id):
     conn.close()
     return rows
 
+def get_seen_available_showtimes(movie_slug, theater_slug, date):
+    """Previously-seen showtimes for this (movie, theater, date) last
+    recorded as available (Sellable/AlmostFull) — used by active tracking
+    to detect a showtime dropping off the listing."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT format, time, status FROM seen_showtimes
+        WHERE movie_slug = ? AND theater_slug = ? AND date = ?
+          AND status IN ('Sellable', 'AlmostFull')
+    ''', (movie_slug, theater_slug, date))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 if __name__ == "__main__":
     init_db()
     print("Database initialized.")

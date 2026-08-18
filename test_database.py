@@ -165,3 +165,33 @@ class TestActiveTracking:
 
         movies = database.get_movies_for_active_tracking(1)
         assert movies == [("dune-part-three-77032", "Dune: Part Three", 0)]
+
+
+class TestGetSeenAvailableShowtimes:
+    def test_returns_only_available_statuses(self, temp_db):
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "IMAX", "8:00pm", "Sellable")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "IMAX", "9:30pm", "AlmostFull")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "Standard", "6:00pm", "ComingSoon")
+
+        rows = database.get_seen_available_showtimes("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09")
+
+        assert sorted(rows) == sorted([
+            ("IMAX", "8:00pm", "Sellable"),
+            ("IMAX", "9:30pm", "AlmostFull"),
+        ])
+
+    def test_returns_empty_when_none_available(self, temp_db):
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "Standard", "6:00pm", "ComingSoon")
+
+        rows = database.get_seen_available_showtimes("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09")
+
+        assert rows == []
+
+    def test_scoped_to_movie_theater_date(self, temp_db):
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "IMAX", "8:00pm", "Sellable")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-empire-25", "2027-01-09", "IMAX", "8:00pm", "Sellable")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-10", "IMAX", "8:00pm", "Sellable")
+
+        rows = database.get_seen_available_showtimes("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09")
+
+        assert rows == [("IMAX", "8:00pm", "Sellable")]

@@ -1017,9 +1017,8 @@ def _format_is_tracked(fmt_name, target_formats):
     """
     if target_formats == "ALL":
         return True
-    fmt_normalized = fmt_name.lower().replace(" ", "")
-    target_fmts_list = [f.strip().lower().replace(" ", "") for f in target_formats.split(",")]
-    return any(tf in fmt_normalized for tf in target_fmts_list)
+    target_fmts_list = [f.strip().lower() for f in target_formats.split(",")]
+    return any(tf in fmt_name.lower() for tf in target_fmts_list)
 
 def run_single_check_sync(user_data):
     date_str = user_data['date_range']

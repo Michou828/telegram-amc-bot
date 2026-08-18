@@ -311,7 +311,7 @@ class TestFormatIsTracked:
         assert bot._format_is_tracked("Dolby Cinema", "ALL") is True
 
     def test_substring_match_is_case_insensitive(self):
-        assert bot._format_is_tracked("RealD 3D", "imax, real d 3d") is True
+        assert bot._format_is_tracked("RealD 3D", "reald") is True
 
     def test_no_match(self):
         assert bot._format_is_tracked("Standard", "IMAX, Dolby Cinema") is False

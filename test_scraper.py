@@ -40,7 +40,7 @@ class TestParseShowtimeStatus:
         s = AMCScraper()
         html = _sample_page([_showtime_json(1, "Sellable", "10:30", "am")])
 
-        results, statuses = s.parse_showtimes(html)
+        results, statuses, showtime_ids = s.parse_showtimes(html)
 
         assert results["moana-72474"]["IMAX with Laser at AMC"] == ["10:30am"]
         assert statuses["moana-72474"]["IMAX with Laser at AMC"]["10:30am"] == "Sellable"
@@ -49,7 +49,7 @@ class TestParseShowtimeStatus:
         s = AMCScraper()
         html = _sample_page([_showtime_json(2, "AlmostFull", "1:15", "pm")])
 
-        results, statuses = s.parse_showtimes(html)
+        results, statuses, showtime_ids = s.parse_showtimes(html)
 
         assert results["moana-72474"]["IMAX with Laser at AMC"] == ["1:15pm"]
         assert statuses["moana-72474"]["IMAX with Laser at AMC"]["1:15pm"] == "AlmostFull"
@@ -58,7 +58,7 @@ class TestParseShowtimeStatus:
         s = AMCScraper()
         html = _sample_page([_showtime_json(3, "ComingSoon", "6:00", "pm")])
 
-        results, statuses = s.parse_showtimes(html)
+        results, statuses, showtime_ids = s.parse_showtimes(html)
 
         assert results["moana-72474"]["IMAX with Laser at AMC"] == ["6:00pm"]
         assert statuses["moana-72474"]["IMAX with Laser at AMC"]["6:00pm"] == "ComingSoon"
@@ -70,7 +70,7 @@ class TestParseShowtimeStatus:
             _showtime_json(2, "AlmostFull", "1:15", "pm"),
         ])
 
-        results, statuses = s.parse_showtimes(html)
+        results, statuses, showtime_ids = s.parse_showtimes(html)
 
         fmt_statuses = statuses["moana-72474"]["IMAX with Laser at AMC"]
         assert fmt_statuses["10:30am"] == "Sellable"
@@ -78,6 +78,34 @@ class TestParseShowtimeStatus:
 
     def test_empty_html_returns_empty_statuses(self):
         s = AMCScraper()
-        results, statuses = s.parse_showtimes("")
+        results, statuses, showtime_ids = s.parse_showtimes("")
         assert results == {}
         assert statuses == {}
+        assert showtime_ids == {}
+
+
+class TestParseShowtimeId:
+    """showtimeId is needed to build a direct booking deep link
+    (https://www.amctheatres.com/showtimes/{id}/seats) instead of only
+    linking to the movie's general page."""
+
+    def test_captures_showtime_id(self):
+        s = AMCScraper()
+        html = _sample_page([_showtime_json(146171978, "Soldout", "4:00", "pm")])
+
+        _, _, showtime_ids = s.parse_showtimes(html)
+
+        assert showtime_ids["moana-72474"]["IMAX with Laser at AMC"]["4:00pm"] == "146171978"
+
+    def test_multiple_showtime_ids_tracked_independently(self):
+        s = AMCScraper()
+        html = _sample_page([
+            _showtime_json(1, "Sellable", "10:30", "am"),
+            _showtime_json(2, "AlmostFull", "1:15", "pm"),
+        ])
+
+        _, _, showtime_ids = s.parse_showtimes(html)
+
+        fmt_ids = showtime_ids["moana-72474"]["IMAX with Laser at AMC"]
+        assert fmt_ids["10:30am"] == "1"
+        assert fmt_ids["1:15pm"] == "2"

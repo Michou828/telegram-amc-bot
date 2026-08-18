@@ -219,6 +219,29 @@ class TestFormatTimesWithBadges:
 
         assert result == "9:00am 🕒, 1:15pm ⚠️, 4:00pm"
 
+    def test_soldout_time_gets_badge(self):
+        assert bot._format_time_label("4:00pm", "Soldout") == "4:00pm 🚫"
+
+    def test_time_with_showtime_id_becomes_a_link(self):
+        assert bot._format_time_label("4:00pm", "Soldout", "146171978") == (
+            "[4:00pm 🚫](https://www.amctheatres.com/showtimes/146171978/seats)"
+        )
+
+    def test_time_without_showtime_id_stays_plain(self):
+        assert bot._format_time_label("10:30am", "Sellable", None) == "10:30am"
+
+    def test_formats_mixed_list_with_showtime_ids(self):
+        times = ["10:30am", "4:00pm"]
+        status_by_time = {"10:30am": "Sellable", "4:00pm": "Soldout"}
+        id_by_time = {"10:30am": "1", "4:00pm": "146171978"}
+
+        result = bot._format_times_with_badges(times, status_by_time, id_by_time)
+
+        assert result == (
+            "[10:30am](https://www.amctheatres.com/showtimes/1/seats), "
+            "[4:00pm 🚫](https://www.amctheatres.com/showtimes/146171978/seats)"
+        )
+
 
 class TestClassifyShowtime:
     """Decides what a polled (format, time) entry means for notification
@@ -262,6 +285,24 @@ class TestClassifyShowtime:
 
     def test_delisted_still_coming_soon_is_unchanged(self):
         assert bot._classify_showtime(seen=True, stored_status="Delisted", current_status="ComingSoon") == "unchanged"
+
+    def test_sellable_to_soldout_is_went_soldout(self):
+        assert bot._classify_showtime(seen=True, stored_status="Sellable", current_status="Soldout") == "went_soldout"
+
+    def test_almost_full_to_soldout_is_went_soldout(self):
+        assert bot._classify_showtime(seen=True, stored_status="AlmostFull", current_status="Soldout") == "went_soldout"
+
+    def test_coming_soon_to_soldout_is_went_soldout_not_now_available(self):
+        assert bot._classify_showtime(seen=True, stored_status="ComingSoon", current_status="Soldout") == "went_soldout"
+
+    def test_soldout_to_soldout_is_unchanged(self):
+        assert bot._classify_showtime(seen=True, stored_status="Soldout", current_status="Soldout") == "unchanged"
+
+    def test_soldout_becomes_available_again_sellable(self):
+        assert bot._classify_showtime(seen=True, stored_status="Soldout", current_status="Sellable") == "available_again"
+
+    def test_soldout_becomes_available_again_almost_full(self):
+        assert bot._classify_showtime(seen=True, stored_status="Soldout", current_status="AlmostFull") == "available_again"
 
 
 class TestFindDelistedShowtimes:

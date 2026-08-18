@@ -259,23 +259,27 @@ class AMCScraper:
         return None
 
     def parse_showtimes(self, html):
-        """Returns (results, statuses):
-          results  = { movie_slug: { format_name: [times] } }
-          statuses = { movie_slug: { format_name: { time: status } } }
+        """Returns (results, statuses, showtime_ids):
+          results      = { movie_slug: { format_name: [times] } }
+          statuses     = { movie_slug: { format_name: { time: status } } }
+          showtime_ids = { movie_slug: { format_name: { time: showtimeId } } }
         `status` is AMC's own sellability field (confirmed live values: "Sellable",
-        "AlmostFull", "ComingSoon" — the last meaning a showtime not yet on sale)
-        — kept separate from `results` so every existing caller that just wants
-        the list of times is unaffected.
+        "AlmostFull", "ComingSoon", "Soldout" — ComingSoon meaning not yet on sale).
+        `showtimeId` builds a direct booking link:
+        https://www.amctheatres.com/showtimes/{showtimeId}/seats
+        Both are kept separate from `results` so every existing caller that just
+        wants the list of times is unaffected.
         """
-        if not html: return {}, {}
+        if not html: return {}, {}, {}
 
         results = {}
         statuses = {}
+        showtime_ids = {}
 
         chunks = re.findall(r'self\.__next_f\.push\(\[\d+,(?:"(.*?)"|null)\]\)', html, re.DOTALL)
         full_data = "".join([c for c in chunks if c]).replace('\\"', '"').replace('\\\\', '\\')
 
-        if not full_data: return {}, {}
+        if not full_data: return {}, {}, {}
 
         movie_matches = list(re.finditer(r'{"avatarImage":{.*?},"name":"([^"]+)","slug":"([^"]+)"', full_data))
         format_matches = list(re.finditer(r'"h3",null,{"id":"[^"]+","children":.*?{"children":"([^"]+)"}', full_data))
@@ -308,14 +312,17 @@ class AMCScraper:
             if current_slug not in results:
                 results[current_slug] = {}
                 statuses[current_slug] = {}
+                showtime_ids[current_slug] = {}
             if current_format not in results[current_slug]:
                 results[current_slug][current_format] = []
                 statuses[current_slug][current_format] = {}
+                showtime_ids[current_slug][current_format] = {}
             if time_val not in results[current_slug][current_format]:
                 results[current_slug][current_format].append(time_val)
             statuses[current_slug][current_format][time_val] = status
+            showtime_ids[current_slug][current_format][time_val] = s.group(1)
 
-        return results, statuses
+        return results, statuses, showtime_ids
 
     def _graphql_movies(self, availability, first=500):
         """Query AMC's GraphQL API for movies by availability type. Returns list of edge nodes."""

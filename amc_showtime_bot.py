@@ -917,7 +917,7 @@ async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_data_copy['date_range'] = date
                 check_result = await asyncio.to_thread(run_single_check_sync, user_data_copy)
                 if check_result:
-                    results, statuses = check_result
+                    results, statuses, showtime_ids = check_result
                     found_any = True
                     movie_slug = context.user_data['movie_slug']
                     theater_slug = context.user_data['theater_slug']
@@ -925,7 +925,7 @@ async def date_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
                            f"📍 {context.user_data['theater_name']}\n📅 {date}\n")
                     for fmt, times in results.items():
                         badge = "🆕 " if is_format_new(movie_slug, theater_slug, date, fmt) else ""
-                        msg += f"\n{badge}*{fmt}*\n{_format_times_with_badges(times, statuses.get(fmt, {}))}\n"
+                        msg += f"\n{badge}*{fmt}*\n{_format_times_with_badges(times, statuses.get(fmt, {}), showtime_ids.get(fmt, {}))}\n"
                         # Mark as seen so future checks and polls track newness correctly
                         for t in times:
                             if not is_showtime_seen(movie_slug, theater_slug, date, fmt, t):
@@ -1005,19 +1005,34 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- POLLING LOGIC ---
 
-def _format_time_label(time_str, status):
-    """Badge a showtime with AMC's own sellability signal: AlmostFull means it
-    may sell out imminently, ComingSoon means it isn't purchasable yet. Any
-    other status is treated as available rather than guessed at — we've only
-    ever confirmed "Sellable"/"AlmostFull"/"ComingSoon" live."""
-    if status == "AlmostFull":
-        return f"{time_str} ⚠️"
-    if status == "ComingSoon":
-        return f"{time_str} 🕒"
-    return time_str
+def _showtime_url(showtime_id):
+    return f"https://www.amctheatres.com/showtimes/{showtime_id}/seats"
 
-def _format_times_with_badges(times, status_by_time):
-    return ", ".join(_format_time_label(t, status_by_time.get(t, "Sellable")) for t in times)
+def _format_time_label(time_str, status, showtime_id=None):
+    """Badge a showtime with AMC's own sellability signal: AlmostFull means it
+    may sell out imminently, ComingSoon means it isn't purchasable yet, Soldout
+    means no tickets remain. Any other status is treated as available rather
+    than guessed at — we've only ever confirmed "Sellable"/"AlmostFull"/
+    "ComingSoon"/"Soldout" live. If showtime_id is given, the label links
+    directly to that showtime's seats page instead of being plain text."""
+    if status == "AlmostFull":
+        label = f"{time_str} ⚠️"
+    elif status == "ComingSoon":
+        label = f"{time_str} 🕒"
+    elif status == "Soldout":
+        label = f"{time_str} 🚫"
+    else:
+        label = time_str
+    if showtime_id:
+        return f"[{label}]({_showtime_url(showtime_id)})"
+    return label
+
+def _format_times_with_badges(times, status_by_time, id_by_time=None):
+    id_by_time = id_by_time or {}
+    return ", ".join(
+        _format_time_label(t, status_by_time.get(t, "Sellable"), id_by_time.get(t))
+        for t in times
+    )
 
 def _classify_showtime(seen, stored_status, current_status):
     """What a polled (format, time) entry means for notification purposes.
@@ -1032,10 +1047,10 @@ def _classify_showtime(seen, stored_status, current_status):
         return "new"
     if stored_status is None:
         return "backfill"
-    if stored_status == "ComingSoon" and current_status != "ComingSoon":
-        return "now_available"
-    if stored_status == "Delisted" and current_status in ("Sellable", "AlmostFull"):
-        return "available_again"
+    if current_status in ("Sellable", "AlmostFull") and stored_status in ("ComingSoon", "Delisted", "Soldout"):
+        return "now_available" if stored_status == "ComingSoon" else "available_again"
+    if current_status == "Soldout" and stored_status != "Soldout":
+        return "went_soldout"
     return "unchanged"
 
 
@@ -1081,11 +1096,11 @@ def run_single_check_sync(user_data):
     logger.info(f"Checking URL: {url}")
     html = scraper.get_page_data(url)
     if not html: return None
-    all_data, all_statuses = scraper.parse_showtimes(html)
+    all_data, all_statuses, all_showtime_ids = scraper.parse_showtimes(html)
     times_by_format = all_data.get(movie_slug)
     if not times_by_format:
         return None
-    return times_by_format, all_statuses.get(movie_slug, {})
+    return times_by_format, all_statuses.get(movie_slug, {}), all_showtime_ids.get(movie_slug, {})
 
 def parse_date_input(text):
     try:
@@ -1266,7 +1281,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                 continue
             _register_poll_success(context.bot_data, item_key)
 
-            all_data, all_statuses = scraper.parse_showtimes(html)
+            all_data, all_statuses, all_showtime_ids = scraper.parse_showtimes(html)
             new_showtimes_found = {}
             now_available_found = {}
             available_again_found = {}
@@ -1283,6 +1298,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                     matched_slug = None
 
             matched_statuses = all_statuses.get(matched_slug, {}) if matched_slug else {}
+            matched_showtime_ids = all_showtime_ids.get(matched_slug, {}) if matched_slug else {}
             current_keys = set()  # (format, time) tracked-format keys seen this poll — active tracking's delisting diff
 
             if matched_slug:
@@ -1307,6 +1323,11 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                             available_again_found.setdefault(fmt_name, []).append(time_val)
                         elif classification == "backfill":
                             update_showtime_status(movie_slug, theater_slug, date, fmt_name, time_val, current_status)
+                        elif classification == "went_soldout":
+                            # AMC directly reports "Soldout" — persist it silently (no
+                            # notification) for every tracked row, not just active-tracked
+                            # ones, so a later restock is still detected as available_again.
+                            update_showtime_status(movie_slug, theater_slug, date, fmt_name, time_val, current_status)
                         # "unchanged" -> no-op
 
                 # Active tracking only: silently mark showtimes that dropped off the
@@ -1328,8 +1349,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                 msg = f"🔔 *NEW SHOWTIMES FOUND!*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
                 for fmt, times in new_showtimes_found.items():
                     badge = "🆕 " if is_format_new(movie_slug, theater_slug, date, fmt) else ""
-                    msg += f"\n{badge}*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}))}\n"
-                msg += f"\n[Book Tickets](https://www.amctheatres.com/movies/{movie_slug})"
+                    msg += f"\n{badge}*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}), matched_showtime_ids.get(fmt, {}))}\n"
                 try:
                     await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
                     for fmt_name, times in new_showtimes_found.items():
@@ -1342,8 +1362,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
             if now_available_found:
                 msg = f"🎟️ *TICKETS NOW AVAILABLE!*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
                 for fmt, times in now_available_found.items():
-                    msg += f"\n*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}))}\n"
-                msg += f"\n[Book Tickets](https://www.amctheatres.com/movies/{movie_slug})"
+                    msg += f"\n*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}), matched_showtime_ids.get(fmt, {}))}\n"
                 try:
                     await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
                     for fmt_name, times in now_available_found.items():
@@ -1356,8 +1375,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
             if available_again_found:
                 msg = f"🔁 *AVAILABLE AGAIN*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
                 for fmt, times in available_again_found.items():
-                    msg += f"\n*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}))}\n"
-                msg += f"\n[Book Tickets](https://www.amctheatres.com/movies/{movie_slug})"
+                    msg += f"\n*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}), matched_showtime_ids.get(fmt, {}))}\n"
                 try:
                     await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
                     for fmt_name, times in available_again_found.items():

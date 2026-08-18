@@ -983,7 +983,43 @@ def _classify_showtime(seen, stored_status, current_status):
         return "backfill"
     if stored_status == "ComingSoon" and current_status != "ComingSoon":
         return "now_available"
+    if stored_status == "Delisted" and current_status in ("Sellable", "AlmostFull"):
+        return "available_again"
     return "unchanged"
+
+
+def _find_delisted_showtimes(current_keys, seen_rows):
+    """Diff previously-available showtimes against what's currently listed.
+
+    current_keys: set of (format, time) tuples present in this poll's
+      listing (already filtered to the tracked row's target formats).
+    seen_rows: iterable of (format, time, status) previously recorded for
+      this (movie, theater, date) — expected to already be filtered to
+      available statuses (Sellable/AlmostFull) and tracked formats by the
+      caller, but this function re-checks status defensively.
+
+    Returns a list of (format, time) tuples that were last recorded as
+    available but are missing from the current listing — candidates to mark
+    "Delisted" (active tracking only; never notified on its own).
+    """
+    return [
+        (fmt, time_val) for fmt, time_val, status in seen_rows
+        if status in ("Sellable", "AlmostFull") and (fmt, time_val) not in current_keys
+    ]
+
+
+def _format_is_tracked(fmt_name, target_formats):
+    """Whether fmt_name matches a tracked row's target_formats spec.
+
+    target_formats is either the literal "ALL", or a comma-separated list
+    of substrings matched case-insensitively against fmt_name (e.g.
+    "imax, dolby cinema").
+    """
+    if target_formats == "ALL":
+        return True
+    fmt_normalized = fmt_name.lower().replace(" ", "")
+    target_fmts_list = [f.strip().lower().replace(" ", "") for f in target_formats.split(",")]
+    return any(tf in fmt_normalized for tf in target_fmts_list)
 
 def run_single_check_sync(user_data):
     date_str = user_data['date_range']

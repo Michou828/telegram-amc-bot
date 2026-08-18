@@ -254,6 +254,68 @@ class TestClassifyShowtime:
     def test_sellable_to_sellable_is_unchanged(self):
         assert bot._classify_showtime(seen=True, stored_status="Sellable", current_status="Sellable") == "unchanged"
 
+    def test_delisted_becomes_available_again_sellable(self):
+        assert bot._classify_showtime(seen=True, stored_status="Delisted", current_status="Sellable") == "available_again"
+
+    def test_delisted_becomes_available_again_almost_full(self):
+        assert bot._classify_showtime(seen=True, stored_status="Delisted", current_status="AlmostFull") == "available_again"
+
+    def test_delisted_still_coming_soon_is_unchanged(self):
+        assert bot._classify_showtime(seen=True, stored_status="Delisted", current_status="ComingSoon") == "unchanged"
+
+
+class TestFindDelistedShowtimes:
+    def test_finds_missing_available_showtime(self):
+        current_keys = {("Standard", "7:00pm")}
+        seen_rows = [("IMAX", "8:00pm", "Sellable")]
+
+        result = bot._find_delisted_showtimes(current_keys, seen_rows)
+
+        assert result == [("IMAX", "8:00pm")]
+
+    def test_ignores_showtime_still_present(self):
+        current_keys = {("IMAX", "8:00pm")}
+        seen_rows = [("IMAX", "8:00pm", "Sellable")]
+
+        result = bot._find_delisted_showtimes(current_keys, seen_rows)
+
+        assert result == []
+
+    def test_ignores_already_delisted_rows(self):
+        # already-Delisted rows are excluded by the caller's DB query
+        # (get_seen_available_showtimes only returns Sellable/AlmostFull),
+        # but the pure function should also be safe if one slips through.
+        current_keys = set()
+        seen_rows = [("IMAX", "8:00pm", "Delisted")]
+
+        result = bot._find_delisted_showtimes(current_keys, seen_rows)
+
+        assert result == []
+
+    def test_multiple_missing_across_formats(self):
+        current_keys = {("IMAX", "8:00pm")}
+        seen_rows = [
+            ("IMAX", "8:00pm", "Sellable"),
+            ("IMAX", "9:30pm", "AlmostFull"),
+            ("Standard", "7:00pm", "Sellable"),
+        ]
+
+        result = bot._find_delisted_showtimes(current_keys, seen_rows)
+
+        assert sorted(result) == sorted([("IMAX", "9:30pm"), ("Standard", "7:00pm")])
+
+
+class TestFormatIsTracked:
+    def test_all_matches_everything(self):
+        assert bot._format_is_tracked("IMAX", "ALL") is True
+        assert bot._format_is_tracked("Dolby Cinema", "ALL") is True
+
+    def test_substring_match_is_case_insensitive(self):
+        assert bot._format_is_tracked("RealD 3D", "imax, real d 3d") is True
+
+    def test_no_match(self):
+        assert bot._format_is_tracked("Standard", "IMAX, Dolby Cinema") is False
+
 
 class TestSlugReconciliationDetection:
     """A tracked movie's slug can go stale when AMC reissues it (event

@@ -83,8 +83,8 @@ Persists cookies + movie_list_cache + timestamps. Copy from Mac to Pi to bootstr
 SQLite: `amc_bot.db` — never auto-cleared.
 
 Tables:
-- `tracked_movies` — active tracking tasks
-- `seen_showtimes` — dedup log (grows forever; delete db to reset notifications); also tracks per-showtime status to detect ComingSoon-to-on-sale transitions
+- `tracked_movies` — active tracking tasks; `active_tracking` opt-in flag (off by default, toggled via `/activetracking`) enables silent delist detection and a distinct reappearance notification for that movie
+- `seen_showtimes` — dedup log (grows forever; delete db to reset notifications); also tracks per-showtime status to detect ComingSoon-to-on-sale transitions, plus a bot-internal `Delisted` status sentinel (distinct from AMC's own `Sellable`/`AlmostFull`/`ComingSoon` values) used only for active-tracked movies
 - `movie_registry` — coming-soon movies; status: `future_release` / `advanced_tickets`
 - `recent_movies` — 7-day rolling window of searched/selected movies
 - `slug_reconciliations` — proposed movie slug/ID rewrites for `tracked_movies`; status: `pending` / `confirmed` / `declined` / `auto_confirmed` / `ambiguous` (the last is a dedup-only marker, never surfaced to the sweep/auto-confirm path)
@@ -175,7 +175,7 @@ AMC occasionally reissues a movie's slug/ID (e.g. graduating from an `events` pl
 - `fmt_<name>` — format toggle in `/track`
 - `rmpick_<i>` / `rmtoggle_<id>` / `rmconfirm` / `rmcancel` — remove flow
 - `reconcile_yes_<id>` / `reconcile_no_<id>` — slug reconciliation confirm/decline
-- `acttrack_<slug>` / `acttrack_done` — active tracking toggle
+- `acttrack_<i>` / `acttrack_done` — active tracking toggle (index into `context.bot_data['acttrack_movies']`, not the raw slug — AMC event slugs can exceed Telegram's 64-byte callback_data limit)
 
 ## Deployment (Raspberry Pi Zero 2 W)
 
@@ -212,7 +212,7 @@ Added 2026-07-24: movie ID reconciliation — detects a tracked movie's AMC slug
 
 Added 2026-08-17: Available Soon tracking — AMC now lists future showtimes with `status: "ComingSoon"` before they go on sale. Previously these got folded into a normal "new showtime" notification and then never re-checked, so the bot never noticed when they actually became purchasable. `seen_showtimes` now has a `status` column (NULL-defaulted for pre-existing rows, so already-tracked movies backfill correctly without a spurious notification); `ComingSoon` times get a 🕒 badge; and a distinct `🎟️ TICKETS NOW AVAILABLE!` notification fires when a tracked showtime transitions from `ComingSoon` to `Sellable`/`AlmostFull`. See `docs/superpowers/specs/2026-08-17-available-soon-tracking-design.md`, `docs/superpowers/plans/2026-08-17-available-soon-tracking.md`, `_classify_showtime`/`TestClassifyShowtime` in `amc_showtime_bot.py`/`test_amc_showtime_bot.py`, and `test_database.py`. Deployed to the Pi 2026-08-17 and confirmed live: Dune: Part Three's pre-existing `ComingSoon` rows backfilled correctly with no spurious notification.
 
-Added 2026-08-18: Active tracking — `seen_showtimes` adds an `active_tracking` column (boolean, only read by polling if a tracked movie has opt-in enabled). When `/activetracking` toggles active tracking ON for a movie, polling now tracks showtime delistings (transition from `Sellable`/`AlmostFull`/`ComingSoon` to absent from the page) internally via `status = 'Delisted'`, and fires a `🔁 AVAILABLE AGAIN` notification if a delisted showtime reappears as `Sellable`/`AlmostFull`. Delistings can be transient (AMC's queue-it system pulling showtimes mid-purchase window) or final, but the bot can't distinguish between them, so this feature is opt-in to avoid over-notifying on queue events. See `/activetracking` command and Callback data prefixes / Polling sections above, `docs/superpowers/specs/2026-08-18-active-tracking-design.md`, `docs/superpowers/plans/2026-08-18-active-tracking.md`, and unit tests in `test_amc_showtime_bot.py`.
+Added 2026-08-18: Active tracking — `tracked_movies` adds an `active_tracking` column (boolean, only read by polling if a tracked movie has opt-in enabled). When `/activetracking` toggles active tracking ON for a movie, polling now tracks showtime delistings (transition from `Sellable`/`AlmostFull` to absent from the page) internally via `status = 'Delisted'`, and fires a `🔁 AVAILABLE AGAIN` notification if a delisted showtime reappears as `Sellable`/`AlmostFull`. Delistings can be transient (AMC's queue-it system pulling showtimes mid-purchase window) or final, but the bot can't distinguish between them, so this feature is opt-in to avoid over-notifying on queue events. See `/activetracking` command and Callback data prefixes / Polling sections above, `docs/superpowers/specs/2026-08-18-active-tracking-design.md`, `docs/superpowers/plans/2026-08-18-active-tracking.md`, and unit tests in `test_amc_showtime_bot.py`.
 
 Known issues / potential improvements:
 
@@ -224,4 +224,5 @@ Known issues / potential improvements:
 - [ ] Movie ID reconciliation doesn't clean up the orphaned old-slug row left behind in `movie_registry` after a confirmed rewrite — harmless duplicate, out of scope per the design doc
 - [ ] No confirmed "sold out" signal exists anywhere in AMC's showtime data (checked ~1,250 live showtimes + raw payload text, found only `Sellable`/`AlmostFull`/`ComingSoon`) — if a sold-out showtime notification recurs, capture the specific movie/theater/date/time so the live payload can be inspected at that exact moment
 - [ ] The `seen_showtimes.status` column only updates while a showtime is `ComingSoon` (to avoid re-nagging) — once it flips to `Sellable`/`AlmostFull` the stored value is frozen, so `Sellable → AlmostFull` never updates and a hypothetical `Sellable → ComingSoon` regression would permanently strand the row (a second on-sale transition would go unnotified). Not observed live; noted as a design tradeoff, not a bug
+- [ ] Toggling active tracking off after `seen_showtimes` rows for that movie have accumulated a `Delisted` status leaves those rows stale — a subsequent poll (even with tracking off) could still classify a reappearing showtime as `available_again` and send one more 🔁 notification before that row's status gets overwritten with the live value. Bounded and self-draining (one extra notification per stale row, max); judged acceptable rather than worth a code fix
 - [ ] Active tracking's delisting detection can't distinguish "genuinely sold out" from "AMC's queue-it system transiently pulled this showtime" — by design (AMC's data doesn't expose that distinction; see the existing known issue about no confirmed "sold out" signal). A showtime that comes back after a real sellout would still trigger 🔁 AVAILABLE AGAIN, same as one that comes back after a queue event.

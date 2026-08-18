@@ -306,10 +306,10 @@ async def remove_cancel_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 def _active_tracking_keyboard(movies):
     keyboard = []
-    for slug, name, enabled in movies:
+    for i, (slug, name, enabled) in enumerate(movies):
         indicator = "🟢 ON " if enabled else "⚪ OFF"
         keyboard.append([InlineKeyboardButton(
-            f"{indicator} — {name}", callback_data=f"acttrack_{slug}"
+            f"{indicator} — {name}", callback_data=f"acttrack_{i}"
         )])
     keyboard.append([InlineKeyboardButton("✅ Done", callback_data="acttrack_done")])
     return InlineKeyboardMarkup(keyboard)
@@ -320,6 +320,7 @@ async def active_tracking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not movies:
         await update.message.reply_text("You are not tracking any movies.\n\nUse /track to start.")
         return
+    context.bot_data['acttrack_movies'] = movies
     await update.message.reply_text(
         "Toggle active tracking — watches a showtime that disappears from AMC's "
         "listing (e.g. during a release-day queue) and alerts you when it's "
@@ -334,19 +335,21 @@ async def active_tracking_callback(update: Update, context: ContextTypes.DEFAULT
 
     payload = query.data.replace("acttrack_", "", 1)
     if payload == "done":
+        context.bot_data.pop('acttrack_movies', None)
         await query.edit_message_text("Done.")
         return
 
     user_id = update.effective_user.id
-    slug = payload
-    movies = get_movies_for_active_tracking(user_id)
-    current = next((enabled for s, n, enabled in movies if s == slug), None)
-    if current is None:
+    movies = context.bot_data.get('acttrack_movies', [])
+    idx = int(payload)
+    if idx >= len(movies):
         await query.edit_message_text("❌ Session expired. Run /activetracking again.")
         return
+    slug, name, current = movies[idx]
     set_active_tracking(user_id, slug, not current)
 
     movies = get_movies_for_active_tracking(user_id)
+    context.bot_data['acttrack_movies'] = movies
     await query.edit_message_reply_markup(reply_markup=_active_tracking_keyboard(movies))
 
 async def refresh_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):

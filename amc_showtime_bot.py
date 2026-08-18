@@ -27,7 +27,8 @@ from database import (
     add_recent_movie, get_recent_movies,
     add_slug_reconciliation, get_slug_reconciliation_pair, get_slug_reconciliation,
     set_slug_reconciliation_message_id, resolve_slug_reconciliation,
-    apply_slug_reconciliation, get_pending_slug_reconciliations
+    apply_slug_reconciliation, get_pending_slug_reconciliations,
+    get_seen_available_showtimes
 )
 from scraper import AMCScraper
 
@@ -1218,6 +1219,7 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
             all_data, all_statuses = scraper.parse_showtimes(html)
             new_showtimes_found = {}
             now_available_found = {}
+            available_again_found = {}
 
             # Match by exact slug first, then fall back to numeric movie ID suffix
             # (GraphQL slugs sometimes differ from theater-page slugs, e.g. the-mandalorian-grogu-60322
@@ -1231,18 +1233,18 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                     matched_slug = None
 
             matched_statuses = all_statuses.get(matched_slug, {}) if matched_slug else {}
+            current_keys = set()  # (format, time) tracked-format keys seen this poll — active tracking's delisting diff
 
             if matched_slug:
                 # Showtimes detected — upgrade registry status if applicable
                 if upgrade_registry_to_advanced(movie_slug):
                     logger.info(f"[Registry] {movie_name} upgraded to advanced_tickets")
                 for fmt_name, times in all_data[matched_slug].items():
-                    if target_formats != "ALL":
-                        target_fmts_list = [f.strip().lower() for f in target_formats.split(",")]
-                        if not any(tf in fmt_name.lower() for tf in target_fmts_list):
-                            continue
+                    if not _format_is_tracked(fmt_name, target_formats):
+                        continue
                     for time_val in times:
                         current_status = matched_statuses.get(fmt_name, {}).get(time_val, "Sellable")
+                        current_keys.add((fmt_name, time_val))
                         seen = is_showtime_seen(movie_slug, theater_slug, date, fmt_name, time_val)
                         stored_status = get_showtime_status(movie_slug, theater_slug, date, fmt_name, time_val) if seen else None
                         classification = _classify_showtime(seen, stored_status, current_status)
@@ -1251,9 +1253,26 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                             new_showtimes_found.setdefault(fmt_name, []).append(time_val)
                         elif classification == "now_available":
                             now_available_found.setdefault(fmt_name, []).append(time_val)
+                        elif classification == "available_again":
+                            available_again_found.setdefault(fmt_name, []).append(time_val)
                         elif classification == "backfill":
                             update_showtime_status(movie_slug, theater_slug, date, fmt_name, time_val, current_status)
                         # "unchanged" -> no-op
+
+                # Active tracking only: silently mark showtimes that dropped off the
+                # listing as "Delisted" so a later reappearance is caught above as
+                # "available_again". Gated on matched_slug being truthy — a queue-it
+                # holding page (real HTML, but not the real showtimes content) parses
+                # to an empty listing and would otherwise look identical to every
+                # showtime having vanished at once.
+                if active_tracking:
+                    seen_rows = get_seen_available_showtimes(movie_slug, theater_slug, date)
+                    tracked_seen_rows = [
+                        (fmt, time_val, status) for fmt, time_val, status in seen_rows
+                        if _format_is_tracked(fmt, target_formats)
+                    ]
+                    for fmt_name, time_val in _find_delisted_showtimes(current_keys, tracked_seen_rows):
+                        update_showtime_status(movie_slug, theater_slug, date, fmt_name, time_val, "Delisted")
 
             if new_showtimes_found:
                 msg = f"🔔 *NEW SHOWTIMES FOUND!*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
@@ -1283,6 +1302,20 @@ async def polling_task(context: ContextTypes.DEFAULT_TYPE):
                             update_showtime_status(movie_slug, theater_slug, date, fmt_name, time_val, status)
                 except Exception as e:
                     logger.error(f"Failed to send now-available notification to {user_id}: {e}")
+
+            if available_again_found:
+                msg = f"🔁 *AVAILABLE AGAIN*\n\n🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
+                for fmt, times in available_again_found.items():
+                    msg += f"\n*{fmt}*\n{_format_times_with_badges(times, matched_statuses.get(fmt, {}))}\n"
+                msg += f"\n[Book Tickets](https://www.amctheatres.com/movies/{movie_slug})"
+                try:
+                    await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
+                    for fmt_name, times in available_again_found.items():
+                        for time_val in times:
+                            status = matched_statuses.get(fmt_name, {}).get(time_val, "Sellable")
+                            update_showtime_status(movie_slug, theater_slug, date, fmt_name, time_val, status)
+                except Exception as e:
+                    logger.error(f"Failed to send available-again notification to {user_id}: {e}")
 
             await asyncio.sleep(2)
 

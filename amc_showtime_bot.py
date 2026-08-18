@@ -28,7 +28,8 @@ from database import (
     add_slug_reconciliation, get_slug_reconciliation_pair, get_slug_reconciliation,
     set_slug_reconciliation_message_id, resolve_slug_reconciliation,
     apply_slug_reconciliation, get_pending_slug_reconciliations,
-    get_seen_available_showtimes
+    get_seen_available_showtimes,
+    set_active_tracking, get_movies_for_active_tracking
 )
 from scraper import AMCScraper
 
@@ -68,6 +69,7 @@ HELP_TEXT = (
     "/track — Monitor a movie for new showtimes\n\n"
     "📋 *Tracking List*\n"
     "/trackinglist — View all tracked movies\n"
+    "/activetracking — Toggle disappear/reappear alerts\n"
     "/remove — Stop tracking a movie\n\n"
     "🎥 *Movie Browser*\n"
     "/movies — Browse Now Playing, Coming Soon & Events\n"
@@ -301,6 +303,51 @@ async def remove_cancel_callback(update: Update, context: ContextTypes.DEFAULT_T
     context.bot_data.pop('rm_selected', None)
     context.bot_data.pop('rm_title', None)
     await query.edit_message_text("Cancelled.")
+
+def _active_tracking_keyboard(movies):
+    keyboard = []
+    for slug, name, enabled in movies:
+        indicator = "🟢 ON " if enabled else "⚪ OFF"
+        keyboard.append([InlineKeyboardButton(
+            f"{indicator} — {name}", callback_data=f"acttrack_{slug}"
+        )])
+    keyboard.append([InlineKeyboardButton("✅ Done", callback_data="acttrack_done")])
+    return InlineKeyboardMarkup(keyboard)
+
+async def active_tracking_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return
+    movies = get_movies_for_active_tracking(update.effective_user.id)
+    if not movies:
+        await update.message.reply_text("You are not tracking any movies.\n\nUse /track to start.")
+        return
+    await update.message.reply_text(
+        "Toggle active tracking — watches a showtime that disappears from AMC's "
+        "listing (e.g. during a release-day queue) and alerts you when it's "
+        "bookable again:",
+        reply_markup=_active_tracking_keyboard(movies)
+    )
+
+async def active_tracking_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return
+    await query.answer()
+
+    payload = query.data.replace("acttrack_", "", 1)
+    if payload == "done":
+        await query.edit_message_text("Done.")
+        return
+
+    user_id = update.effective_user.id
+    slug = payload
+    movies = get_movies_for_active_tracking(user_id)
+    current = next((enabled for s, n, enabled in movies if s == slug), None)
+    if current is None:
+        await query.edit_message_text("❌ Session expired. Run /activetracking again.")
+        return
+    set_active_tracking(user_id, slug, not current)
+
+    movies = get_movies_for_active_tracking(user_id)
+    await query.edit_message_reply_markup(reply_markup=_active_tracking_keyboard(movies))
 
 async def refresh_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -1440,6 +1487,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("botstatus", status))
     app.add_handler(CommandHandler("trackinglist", list_tracked))
+    app.add_handler(CommandHandler("activetracking", active_tracking_cmd))
     app.add_handler(CommandHandler("remove", remove_movie))
     app.add_handler(CommandHandler("refreshcookies", refresh_cookies))
     app.add_handler(CommandHandler("refreshmovielist", refresh_movie_list_cmd))
@@ -1452,6 +1500,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(remove_toggle_callback, pattern="^rmtoggle_"))
     app.add_handler(CallbackQueryHandler(remove_confirm_callback, pattern="^rmconfirm$"))
     app.add_handler(CallbackQueryHandler(remove_cancel_callback, pattern="^rmcancel$"))
+    app.add_handler(CallbackQueryHandler(active_tracking_callback, pattern="^acttrack_"))
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
     app.add_handler(conv_handler)
     # Must be last — catches any /command not matched above

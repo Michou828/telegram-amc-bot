@@ -389,6 +389,10 @@ async def trackingdb_movie_callback(update: Update, context: ContextTypes.DEFAUL
     context.user_data['trackingdb_movie_name'] = movie_name
     context.user_data['trackingdb_theater_groups'] = groups
 
+    if not groups:
+        await query.edit_message_text("❌ That movie is no longer tracked. Run /trackingdb again.")
+        return ConversationHandler.END
+
     if len(groups) == 1:
         context.user_data['trackingdb_group'] = groups[0]
         await query.edit_message_text(
@@ -432,6 +436,23 @@ async def trackingdb_theater_callback(update: Update, context: ContextTypes.DEFA
     return TRACKINGDB_SELECT_DATES
 
 
+def _trackingdb_format_times(times, status_by_time):
+    """Like _format_times_with_badges, but also surfaces the bot-internal
+    statuses (Delisted, and pre-migration NULL rows) that live notifications
+    deliberately hide — /trackingdb exists specifically to show what's
+    actually stored, including those."""
+    parts = []
+    for t in times:
+        status = status_by_time.get(t)
+        if status == "Delisted":
+            parts.append(f"{t} (delisted)")
+        elif status is None:
+            parts.append(f"{t} (no status)")
+        else:
+            parts.append(_format_time_label(t, status))
+    return ", ".join(parts)
+
+
 async def trackingdb_dates_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return ConversationHandler.END
 
@@ -458,26 +479,23 @@ async def trackingdb_dates_entered(update: Update, context: ContextTypes.DEFAULT
         specs = _resolve_tracked_date(entries, date)
         if specs is None:
             msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n\nNot tracking"
-            await update.message.reply_text(msg, parse_mode="Markdown")
-            continue
+        else:
+            rows = get_seen_showtimes_for_date(movie_slug, theater_slug, date)
+            tracked_rows = [
+                (fmt, time_val, status) for fmt, time_val, status in rows
+                if any(_format_is_tracked(fmt, spec) for spec in specs)
+            ]
+            if not tracked_rows:
+                msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n\nNo data yet"
+            else:
+                by_format = {}
+                for fmt, time_val, status in tracked_rows:
+                    by_format.setdefault(fmt, {})[time_val] = status
+                msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
+                for fmt, status_by_time in sorted(by_format.items()):
+                    times = sorted(status_by_time.keys(), key=_time_sort_key)
+                    msg += f"\n*{fmt}*\n{_trackingdb_format_times(times, status_by_time)}\n"
 
-        rows = get_seen_showtimes_for_date(movie_slug, theater_slug, date)
-        tracked_rows = [
-            (fmt, time_val, status) for fmt, time_val, status in rows
-            if any(_format_is_tracked(fmt, spec) for spec in specs)
-        ]
-        if not tracked_rows:
-            msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n\nNo data yet"
-            await update.message.reply_text(msg, parse_mode="Markdown")
-            continue
-
-        by_format = {}
-        for fmt, time_val, status in tracked_rows:
-            by_format.setdefault(fmt, {})[time_val] = status
-        msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
-        for fmt, status_by_time in by_format.items():
-            times = sorted(status_by_time.keys(), key=_time_sort_key)
-            msg += f"\n*{fmt}*\n{_format_times_with_badges(times, status_by_time)}\n"
         await update.message.reply_text(msg, parse_mode="Markdown")
         await asyncio.sleep(0.5)
 
@@ -1241,7 +1259,10 @@ def _time_sort_key(time_str):
     """Sort key for AMC's "H:MMam/pm" time labels (e.g. "4:00pm") into
     chronological order — seen_showtimes rows have no reliable insertion
     order to rely on for display."""
-    return datetime.datetime.strptime(time_str, "%I:%M%p")
+    try:
+        return datetime.datetime.strptime(time_str, "%I:%M%p")
+    except ValueError:
+        return datetime.datetime.max
 
 def run_single_check_sync(user_data):
     date_str = user_data['date_range']

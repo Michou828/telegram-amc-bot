@@ -99,6 +99,7 @@ Tables:
 | `/track` | Background monitoring (movie → theater → date → formats) |
 | `/trackinglist` | Show tracked movies grouped by movie → format → dates |
 | `/activetracking` | Toggle disappear/reappear alerts for a tracked movie |
+| `/trackingdb` | Inspect stored `seen_showtimes` data for a tracked movie (no live fetch) |
 | `/remove` | Two-step multi-select removal by date entry |
 | `/movies` | Browse Now Playing / Advance Tickets / Coming Soon / Events |
 | `/refreshmovielist` | Force GraphQL refresh of all three movie lists |
@@ -176,6 +177,7 @@ AMC occasionally reissues a movie's slug/ID (e.g. graduating from an `events` pl
 - `rmpick_<i>` / `rmtoggle_<id>` / `rmconfirm` / `rmcancel` — remove flow
 - `reconcile_yes_<id>` / `reconcile_no_<id>` — slug reconciliation confirm/decline
 - `acttrack_<i>` / `acttrack_done` — active tracking toggle (index into `context.bot_data['acttrack_movies']`, not the raw slug — AMC event slugs can exceed Telegram's 64-byte callback_data limit)
+- `dbpick_<i>` / `dbtheater_<i>` — /trackingdb movie/theater picker
 
 ## Deployment (Raspberry Pi Zero 2 W)
 
@@ -215,6 +217,8 @@ Added 2026-08-17: Available Soon tracking — AMC now lists future showtimes wit
 Added 2026-08-18: Active tracking — `tracked_movies` adds an `active_tracking` column (boolean, only read by polling if a tracked movie has opt-in enabled). When `/activetracking` toggles active tracking ON for a movie, polling now tracks showtime delistings (transition from `Sellable`/`AlmostFull` to absent from the page) internally via `status = 'Delisted'`, and fires a `🔁 AVAILABLE AGAIN` notification if a delisted showtime reappears as `Sellable`/`AlmostFull`. Delistings can be transient (AMC's queue-it system pulling showtimes mid-purchase window) or final, but the bot can't distinguish between them, so this feature is opt-in to avoid over-notifying on queue events. See `/activetracking` command and Callback data prefixes / Polling sections above, `docs/superpowers/specs/2026-08-18-active-tracking-design.md`, `docs/superpowers/plans/2026-08-18-active-tracking.md`, and unit tests in `test_amc_showtime_bot.py`.
 
 Added 2026-08-18 (same day): confirmed AMC's `"Soldout"` status live for the first time — Dune: Part Three's IMAX 70MM showtimes at AMC Lincoln Square 13 on its release day, resolving the previous "no confirmed sold out signal" known issue. `_classify_showtime` gained a `went_soldout` transition (any status → `Soldout`, persisted silently — no notification, applies to every tracked movie, not gated behind `/activetracking`) and extended `available_again` to also cover `Soldout` → `Sellable`/`AlmostFull` (reusing the same 🔁 notification active tracking's `Delisted` case already used). `_format_time_label` gained a 🚫 badge for `Soldout`. Also resolved the "direct booking links" known issue: `parse_showtimes()` now returns a third `showtime_ids` dict (`{movie_slug: {format: {time: showtimeId}}}`), and every notification (`/check`, new-showtime, now-available, available-again) links each individual time directly to `https://www.amctheatres.com/showtimes/{showtimeId}/seats` instead of a single generic movie-page link at the bottom of the message. Verified against live data on the Pi (showtime 146171978 = Dune: Part Three, IMAX 70MM, 1/10/2027 4:00pm, confirmed sold out via the showtime's own seats page). See `_classify_showtime`/`_format_time_label`/`_format_times_with_badges`/`TestClassifyShowtime`/`TestFormatTimesWithBadges` in `amc_showtime_bot.py`/`test_amc_showtime_bot.py`, and `TestParseShowtimeId` in `test_scraper.py`.
+
+Added 2026-08-18 (same day): `/trackingdb` — a read-only viewer for `seen_showtimes`. Movie → theater (skipped if only one) → date range, then one reply per date: `Not tracking` if outside every tracked entry's range, `No data yet` if tracked but nothing recorded yet, otherwise the stored times grouped by format with the same ⚠️/🕒/🚫 badges live notifications use (no clickable seat links, since `seen_showtimes` doesn't persist `showtimeId` — that's a `/check`-only feature). New `ConversationHandler` with its own states, independent of `/check`/`/track`'s. See `docs/superpowers/specs/2026-08-18-trackingdb-viewer-design.md`, `docs/superpowers/plans/2026-08-18-trackingdb-viewer.md`, `_resolve_tracked_date`/`_time_sort_key`/`TestResolveTrackedDate`/`TestTimeSortKey` in `amc_showtime_bot.py`/`test_amc_showtime_bot.py`, and `get_seen_showtimes_for_date`/`TestGetSeenShowtimesForDate` in `database.py`/`test_database.py`.
 
 Known issues / potential improvements:
 

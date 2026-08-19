@@ -169,7 +169,8 @@ def _build_tracking_groups(tracked):
         key = (movie_slug, theater_slug)
         if key not in groups:
             groups[key] = {'name': movie_name, 'slug': movie_slug,
-                           'theater': theater_name, 'formats': {}, 'entries': [],
+                           'theater': theater_name, 'theater_slug': theater_slug,
+                           'formats': {}, 'entries': [],
                            'active_tracking': bool(active_tracking)}
             order.append(key)
         groups[key]['entries'].append((track_id, formats, date_range))
@@ -1085,6 +1086,27 @@ def _format_is_tracked(fmt_name, target_formats):
         return True
     target_fmts_list = [f.strip().lower() for f in target_formats.split(",")]
     return any(tf in fmt_name.lower() for tf in target_fmts_list)
+
+
+def _resolve_tracked_date(entries, date):
+    """Given a (movie_slug, theater_slug) group's tracked entries
+    [(track_id, formats, date_range), ...] and a specific date string,
+    return the deduplicated list of target_formats specs from every entry
+    whose expanded date_range includes this date, or None if none do.
+    """
+    specs = []
+    for track_id, formats, date_range in entries:
+        if date in get_dates_from_range(date_range):
+            if formats not in specs:
+                specs.append(formats)
+    return specs or None
+
+
+def _time_sort_key(time_str):
+    """Sort key for AMC's "H:MMam/pm" time labels (e.g. "4:00pm") into
+    chronological order — seen_showtimes rows have no reliable insertion
+    order to rely on for display."""
+    return datetime.datetime.strptime(time_str, "%I:%M%p")
 
 def run_single_check_sync(user_data):
     date_str = user_data['date_range']

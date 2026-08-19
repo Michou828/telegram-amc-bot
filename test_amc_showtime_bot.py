@@ -358,6 +358,54 @@ class TestFormatIsTracked:
         assert bot._format_is_tracked("Standard", "IMAX, Dolby Cinema") is False
 
 
+class TestResolveTrackedDate:
+    def test_date_within_single_entry_range(self):
+        entries = [(1, "IMAX", "1/9-1/12")]
+
+        result = bot._resolve_tracked_date(entries, "2027-01-10")
+
+        assert result == ["IMAX"]
+
+    def test_date_outside_every_entry_range(self):
+        entries = [(1, "IMAX", "1/9-1/12")]
+
+        result = bot._resolve_tracked_date(entries, "2026-02-01")
+
+        assert result is None
+
+    def test_date_covered_by_multiple_entries_returns_both_specs(self):
+        entries = [
+            (1, "IMAX", "1/9-1/12"),
+            (2, "Standard", "1/10-1/15"),
+        ]
+
+        result = bot._resolve_tracked_date(entries, "2027-01-10")
+
+        assert sorted(result) == sorted(["IMAX", "Standard"])
+
+    def test_duplicate_identical_specs_are_deduplicated(self):
+        entries = [
+            (1, "ALL", "1/9-1/12"),
+            (2, "ALL", "1/10-1/15"),
+        ]
+
+        result = bot._resolve_tracked_date(entries, "2027-01-10")
+
+        assert result == ["ALL"]
+
+
+class TestTimeSortKey:
+    def test_sorts_am_before_pm(self):
+        times = ["4:00pm", "9:00am"]
+        assert sorted(times, key=bot._time_sort_key) == ["9:00am", "4:00pm"]
+
+    def test_sorts_late_pm_after_early_pm_not_alphabetically(self):
+        # Alphabetical sort would wrongly place "11:00pm" before "4:00pm"
+        # ("1" < "4"); chronologically 11:00pm is later in the same day.
+        times = ["11:00pm", "4:00pm", "9:00am"]
+        assert sorted(times, key=bot._time_sort_key) == ["9:00am", "4:00pm", "11:00pm"]
+
+
 class TestSlugReconciliationDetection:
     """A tracked movie's slug can go stale when AMC reissues it (event
     placeholder -> real Coming Soon listing, e.g. Dune: Part Three going
@@ -466,3 +514,10 @@ class TestBuildTrackingGroups:
         groups = bot._build_tracking_groups(rows)
 
         assert groups[0]['active_tracking'] is False
+
+    def test_includes_theater_slug(self):
+        rows = [self._row(1, "dune-part-three-77032", "amc-lincoln-square-13", "IMAX")]
+
+        groups = bot._build_tracking_groups(rows)
+
+        assert groups[0]['theater_slug'] == "amc-lincoln-square-13"

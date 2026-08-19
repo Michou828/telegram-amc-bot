@@ -29,7 +29,8 @@ from database import (
     set_slug_reconciliation_message_id, resolve_slug_reconciliation,
     apply_slug_reconciliation, get_pending_slug_reconciliations,
     get_seen_available_showtimes,
-    set_active_tracking, get_movies_for_active_tracking
+    set_active_tracking, get_movies_for_active_tracking,
+    get_seen_showtimes_for_date
 )
 from scraper import AMCScraper
 
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 # States for ConversationHandler
 SELECT_MOVIE, SELECT_THEATER, SELECT_DATE, SELECT_FORMAT = range(4)
+TRACKINGDB_SELECT_MOVIE, TRACKINGDB_SELECT_THEATER, TRACKINGDB_SELECT_DATES = range(3)
 
 # Global scraper instance
 scraper = AMCScraper()
@@ -70,6 +72,7 @@ HELP_TEXT = (
     "📋 *Tracking List*\n"
     "/trackinglist — View all tracked movies\n"
     "/activetracking — Toggle disappear/reappear alerts\n"
+    "/trackingdb — Inspect stored data for a tracked movie\n"
     "/remove — Stop tracking a movie\n\n"
     "🎥 *Movie Browser*\n"
     "/movies — Browse Now Playing, Coming Soon & Events\n"
@@ -352,6 +355,138 @@ async def active_tracking_callback(update: Update, context: ContextTypes.DEFAULT
     movies = get_movies_for_active_tracking(user_id)
     context.bot_data['acttrack_movies'] = movies
     await query.edit_message_reply_markup(reply_markup=_active_tracking_keyboard(movies))
+
+
+async def trackingdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return ConversationHandler.END
+    movies = get_movies_for_active_tracking(update.effective_user.id)
+    if not movies:
+        await update.message.reply_text("You are not tracking any movies.\n\nUse /track to start.")
+        return ConversationHandler.END
+
+    context.user_data['trackingdb_movies'] = movies
+    keyboard = [
+        [InlineKeyboardButton(name, callback_data=f"dbpick_{i}")]
+        for i, (slug, name, _enabled) in enumerate(movies)
+    ]
+    await update.message.reply_text("Select a movie to inspect:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return TRACKINGDB_SELECT_MOVIE
+
+
+async def trackingdb_movie_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return ConversationHandler.END
+    await query.answer()
+
+    idx = int(query.data.replace("dbpick_", ""))
+    movies = context.user_data.get('trackingdb_movies', [])
+    if idx >= len(movies):
+        await query.edit_message_text("❌ Session expired. Run /trackingdb again.")
+        return ConversationHandler.END
+
+    movie_slug, movie_name, _enabled = movies[idx]
+    groups = [g for g in _build_tracking_groups(get_tracked_movies()) if g['slug'] == movie_slug]
+    context.user_data['trackingdb_movie_name'] = movie_name
+    context.user_data['trackingdb_theater_groups'] = groups
+
+    if len(groups) == 1:
+        context.user_data['trackingdb_group'] = groups[0]
+        await query.edit_message_text(
+            f"🎬 *{movie_name}*\n📍 {groups[0]['theater']}\n\n"
+            "Enter date(s) to check (e.g. `7/17` or `7/17-7/20`):",
+            parse_mode="Markdown"
+        )
+        return TRACKINGDB_SELECT_DATES
+
+    keyboard = [
+        [InlineKeyboardButton(g['theater'], callback_data=f"dbtheater_{i}")]
+        for i, g in enumerate(groups)
+    ]
+    await query.edit_message_text(
+        f"🎬 *{movie_name}*\nSelect a theater:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return TRACKINGDB_SELECT_THEATER
+
+
+async def trackingdb_theater_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not is_authorized(update): return ConversationHandler.END
+    await query.answer()
+
+    idx = int(query.data.replace("dbtheater_", ""))
+    groups = context.user_data.get('trackingdb_theater_groups', [])
+    if idx >= len(groups):
+        await query.edit_message_text("❌ Session expired. Run /trackingdb again.")
+        return ConversationHandler.END
+
+    group = groups[idx]
+    context.user_data['trackingdb_group'] = group
+    movie_name = context.user_data.get('trackingdb_movie_name', group['name'])
+    await query.edit_message_text(
+        f"🎬 *{movie_name}*\n📍 {group['theater']}\n\n"
+        "Enter date(s) to check (e.g. `7/17` or `7/17-7/20`):",
+        parse_mode="Markdown"
+    )
+    return TRACKINGDB_SELECT_DATES
+
+
+async def trackingdb_dates_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update): return ConversationHandler.END
+
+    group = context.user_data.get('trackingdb_group')
+    if not group:
+        await update.message.reply_text("❌ Session expired. Run /trackingdb again.")
+        return ConversationHandler.END
+
+    dates = get_dates_from_range(update.message.text)
+    if not dates:
+        await update.message.reply_text(
+            "❌ Couldn't parse that as a date. Try `7/17` or `7/17-7/20`.",
+            parse_mode="Markdown"
+        )
+        return TRACKINGDB_SELECT_DATES
+
+    movie_slug = group['slug']
+    theater_slug = group['theater_slug']
+    theater_name = group['theater']
+    movie_name = context.user_data.get('trackingdb_movie_name', group['name'])
+    entries = group['entries']
+
+    for date in dates:
+        specs = _resolve_tracked_date(entries, date)
+        if specs is None:
+            msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n\nNot tracking"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            continue
+
+        rows = get_seen_showtimes_for_date(movie_slug, theater_slug, date)
+        tracked_rows = [
+            (fmt, time_val, status) for fmt, time_val, status in rows
+            if any(_format_is_tracked(fmt, spec) for spec in specs)
+        ]
+        if not tracked_rows:
+            msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n\nNo data yet"
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            continue
+
+        by_format = {}
+        for fmt, time_val, status in tracked_rows:
+            by_format.setdefault(fmt, {})[time_val] = status
+        msg = f"🎬 *{movie_name}*\n📍 {theater_name}\n📅 {date}\n"
+        for fmt, status_by_time in by_format.items():
+            times = sorted(status_by_time.keys(), key=_time_sort_key)
+            msg += f"\n*{fmt}*\n{_format_times_with_badges(times, status_by_time)}\n"
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        await asyncio.sleep(0.5)
+
+    context.user_data.pop('trackingdb_movies', None)
+    context.user_data.pop('trackingdb_movie_name', None)
+    context.user_data.pop('trackingdb_theater_groups', None)
+    context.user_data.pop('trackingdb_group', None)
+    return ConversationHandler.END
+
 
 async def refresh_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update): return
@@ -1497,6 +1632,23 @@ if __name__ == "__main__":
     init_db()
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
+    trackingdb_conv = ConversationHandler(
+        entry_points=[CommandHandler("trackingdb", trackingdb_cmd)],
+        states={
+            TRACKINGDB_SELECT_MOVIE: [
+                CallbackQueryHandler(trackingdb_movie_callback, pattern="^dbpick_")
+            ],
+            TRACKINGDB_SELECT_THEATER: [
+                CallbackQueryHandler(trackingdb_theater_callback, pattern="^dbtheater_")
+            ],
+            TRACKINGDB_SELECT_DATES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, trackingdb_dates_entered)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
+    )
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("track", initiate_flow),
@@ -1546,6 +1698,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(active_tracking_callback, pattern="^acttrack_"))
     app.add_handler(CallbackQueryHandler(noop_callback, pattern="^noop$"))
     app.add_handler(conv_handler)
+    app.add_handler(trackingdb_conv)
     # Must be last — catches any /command not matched above
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     app.add_error_handler(error_handler)

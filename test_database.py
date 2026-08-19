@@ -195,3 +195,35 @@ class TestGetSeenAvailableShowtimes:
         rows = database.get_seen_available_showtimes("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09")
 
         assert rows == [("IMAX", "8:00pm", "Sellable")]
+
+
+class TestGetSeenShowtimesForDate:
+    def test_returns_every_status_unfiltered(self, temp_db):
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "IMAX", "8:00pm", "Sellable")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "IMAX", "9:30pm", "AlmostFull")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "Standard", "6:00pm", "ComingSoon")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "Standard", "7:00pm", "Soldout")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "IMAX", "4:00pm", "Delisted")
+
+        rows = database.get_seen_showtimes_for_date("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09")
+
+        assert sorted(rows) == sorted([
+            ("IMAX", "8:00pm", "Sellable"),
+            ("IMAX", "9:30pm", "AlmostFull"),
+            ("Standard", "6:00pm", "ComingSoon"),
+            ("Standard", "7:00pm", "Soldout"),
+            ("IMAX", "4:00pm", "Delisted"),
+        ])
+
+    def test_returns_empty_when_no_rows(self, temp_db):
+        rows = database.get_seen_showtimes_for_date("nope", "nope", "2027-01-09")
+        assert rows == []
+
+    def test_scoped_to_movie_theater_date(self, temp_db):
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09", "IMAX", "8:00pm", "Sellable")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-empire-25", "2027-01-09", "IMAX", "8:00pm", "Sellable")
+        database.mark_showtime_seen("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-10", "IMAX", "8:00pm", "Sellable")
+
+        rows = database.get_seen_showtimes_for_date("dune-part-three-77032", "amc-lincoln-square-13", "2027-01-09")
+
+        assert rows == [("IMAX", "8:00pm", "Sellable")]

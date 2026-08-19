@@ -389,6 +389,21 @@ def get_seen_available_showtimes(movie_slug, theater_slug, date):
     conn.close()
     return rows
 
+def get_seen_showtimes_for_date(movie_slug, theater_slug, date):
+    """All recorded seen_showtimes rows for this (movie, theater, date),
+    regardless of status — used by /trackingdb to show exactly what the
+    bot's database currently holds. Unlike get_seen_available_showtimes,
+    this is not filtered to Sellable/AlmostFull."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT format, time, status FROM seen_showtimes
+        WHERE movie_slug = ? AND theater_slug = ? AND date = ?
+    ''', (movie_slug, theater_slug, date))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 if __name__ == "__main__":
     init_db()
     print("Database initialized.")

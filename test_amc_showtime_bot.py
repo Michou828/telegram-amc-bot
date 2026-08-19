@@ -360,36 +360,40 @@ class TestFormatIsTracked:
 
 class TestResolveTrackedDate:
     def test_date_within_single_entry_range(self):
+        date = bot.parse_date_input("1/10")
         entries = [(1, "IMAX", "1/9-1/12")]
 
-        result = bot._resolve_tracked_date(entries, "2027-01-10")
+        result = bot._resolve_tracked_date(entries, date)
 
         assert result == ["IMAX"]
 
     def test_date_outside_every_entry_range(self):
+        date = bot.parse_date_input("2/1")
         entries = [(1, "IMAX", "1/9-1/12")]
 
-        result = bot._resolve_tracked_date(entries, "2026-02-01")
+        result = bot._resolve_tracked_date(entries, date)
 
         assert result is None
 
     def test_date_covered_by_multiple_entries_returns_both_specs(self):
+        date = bot.parse_date_input("1/10")
         entries = [
             (1, "IMAX", "1/9-1/12"),
             (2, "Standard", "1/10-1/15"),
         ]
 
-        result = bot._resolve_tracked_date(entries, "2027-01-10")
+        result = bot._resolve_tracked_date(entries, date)
 
         assert sorted(result) == sorted(["IMAX", "Standard"])
 
     def test_duplicate_identical_specs_are_deduplicated(self):
+        date = bot.parse_date_input("1/10")
         entries = [
             (1, "ALL", "1/9-1/12"),
             (2, "ALL", "1/10-1/15"),
         ]
 
-        result = bot._resolve_tracked_date(entries, "2027-01-10")
+        result = bot._resolve_tracked_date(entries, date)
 
         assert result == ["ALL"]
 
